@@ -3,6 +3,8 @@
  * Uses keyword matching + simplified PageRank on the dependency graph.
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { CodeGraph, FileNode, Edge } from "./types";
 import { summarizeFile } from "./summarizer";
 
@@ -54,7 +56,7 @@ const STOP_WORDS = new Set([
   "get", "set", "use", "used", "using",
 ]);
 
-function tokenize(text: string): string[] {
+export function tokenize(text: string): string[] {
   const terms = text
     .toLowerCase()
     // Split camelCase
@@ -192,11 +194,64 @@ function computePageRank(
 }
 
 /**
+ * Extract lines from a source file that match any of the query terms.
+ * Returns up to `maxHits` matching lines with line numbers, trimmed.
+ */
+function extractMatchingLines(
+  rootPath: string,
+  filePath: string,
+  queryTerms: string[],
+  maxHits: number = 5,
+): string[] {
+  if (queryTerms.length === 0) return [];
+  let source: string;
+  try {
+    source = readFileSync(join(rootPath, filePath), "utf-8");
+  } catch {
+    return [];
+  }
+
+  const sourceLines = source.split("\n");
+  const hits: string[] = [];
+
+  for (let i = 0; i < sourceLines.length && hits.length < maxHits; i++) {
+    const line = sourceLines[i]!;
+    const trimmed = line.trim();
+    // Skip blank lines, imports, pure type annotations, comments-only lines
+    if (
+      !trimmed ||
+      trimmed.startsWith("import ") ||
+      trimmed.startsWith("//") ||
+      trimmed.startsWith("/*") ||
+      trimmed.startsWith("*") ||
+      trimmed.startsWith("export interface") ||
+      trimmed.startsWith("export type")
+    ) continue;
+
+    const lower = trimmed.toLowerCase();
+    for (const term of queryTerms) {
+      if (lower.includes(term)) {
+        let display = trimmed;
+        if (display.length > 120) display = display.slice(0, 117) + "...";
+        hits.push(`  L${i + 1}: ${display}`);
+        break;
+      }
+    }
+  }
+  return hits;
+}
+
+/**
  * Render ranked results as compact markdown for LLM consumption.
- * Includes file summary, key exports, and why it matched.
+ * Includes file summary, key exports, matching body lines, and why it matched.
+ *
+ * @param rootPath - project root, needed to read source files for body line matching
+ * @param queryTerms - tokenized query terms for body line extraction
  */
 export function renderRankedResults(
   ranked: RankedFile[],
+  rootPath?: string,
+  queryTerms?: string[],
   maxFiles: number = 10,
   maxLines: number = 200,
 ): string {
@@ -250,6 +305,18 @@ export function renderRankedResults(
       }
       lines.push("");
       // tracked
+    }
+
+    // Show matching body lines from source (implementation details)
+    if (rootPath && queryTerms && queryTerms.length > 0) {
+      const bodyHits = extractMatchingLines(rootPath, file.path, queryTerms);
+      if (bodyHits.length > 0) {
+        lines.push("**Key lines:**");
+        for (const hit of bodyHits) {
+          lines.push(hit);
+        }
+        lines.push("");
+      }
     }
 
     // Show imports — compact, just unique module dirs

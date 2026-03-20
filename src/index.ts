@@ -32,7 +32,7 @@ import { mkdir } from "node:fs/promises";
 import type { CliOptions, CodeGraph } from "./types";
 import { buildCodeGraph } from "./graph";
 import { addSummaries } from "./summarizer";
-import { rankFiles, renderRankedResults } from "./ranker";
+import { rankFiles, renderRankedResults, tokenize } from "./ranker";
 
 interface ParsedArgs {
   command: "init" | "build" | "query" | "check" | "install-hook" | "help";
@@ -392,7 +392,8 @@ async function main(): Promise<void> {
         exclude: parsed.exclude,
       });
       const ranked = rankFiles(graph, parsed.query!);
-      const output = renderRankedResults(ranked);
+      const queryTerms = tokenize(parsed.query!);
+      const output = renderRankedResults(ranked, graph.root, queryTerms);
       // Query results go to stdout (for piping/reading by agents)
       // Build status goes to stderr (already handled by ensureGraph)
       console.log(output);

@@ -29,6 +29,8 @@ const DEFAULT_SKIP_DIRS = new Set([
   "*.egg-info",
   // Codemap
   ".codemap",
+  // Git worktrees (avoid duplicate results)
+  ".worktrees",
 ]);
 
 /** All supported file extensions (auto-detected from registered language plugins) */
