@@ -1,9 +1,9 @@
 {
-  "name": "codemap",
+  "name": "@yuzu-team/codemap",
   "version": "0.1.0",
   "module": "src/index.ts",
   "type": "module",
-  "private": true,
+  "license": "MIT",
   "bin": {
     "codemap": "./src/index.ts"
   },
