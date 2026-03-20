@@ -18,8 +18,9 @@ export function summarizeFile(file: FileNode): string {
   // If there's a class with JSDoc, use that
   for (const cls of file.classes) {
     if (cls.jsdoc) {
+      const firstLine = cls.jsdoc.split("\n")[0]!;
       const ext = cls.extends ? ` (extends ${cls.extends})` : "";
-      return `${cls.jsdoc}${ext}`;
+      return `${firstLine}${ext}`;
     }
   }
 
@@ -33,12 +34,12 @@ export function summarizeFile(file: FileNode): string {
 
   // If there's a function with JSDoc, use that
   for (const fn of file.functions) {
-    if (fn.jsdoc) return fn.jsdoc;
+    if (fn.jsdoc) return fn.jsdoc.split("\n")[0]!;
   }
 
   // Check exports for JSDoc
   for (const exp of file.exports) {
-    if (exp.jsdoc) return exp.jsdoc;
+    if (exp.jsdoc) return exp.jsdoc.split("\n")[0]!;
   }
 
   // Fall back to listing export names

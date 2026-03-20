@@ -1,37 +1,46 @@
 #!/usr/bin/env bun
 /**
- * codemap - AST-based codebase knowledge graph generator.
- * CLI entry point. Run with: bun run src/index.ts [path] [options]
+ * codemap — AST-based codebase knowledge graph generator.
+ * Generates CODEMAP.md from any TypeScript/Python codebase.
+ *
+ * Usage: npx @yuzu-team/codemap [path] [options]
  */
 
+import { resolve, join } from "node:path";
+import { existsSync } from "node:fs";
 import type { CliOptions } from "./types";
+import { buildCodeGraph } from "./graph";
+import { addSummaries } from "./summarizer";
+import { renderCodemap } from "./renderer";
 
 function printUsage(): void {
   console.log(`codemap — AST-based codebase knowledge graph generator
 
 Usage:
-  codemap <path> [options]
+  codemap [path] [options]
 
 Arguments:
-  path                        Root directory to analyze
+  path                        Root directory to analyze (default: .)
 
 Options:
   --output, -o <file>         Output file path (default: CODEMAP.md)
   --include <glob>            Include glob pattern (can be repeated)
   --exclude <glob>            Exclude glob pattern (can be repeated)
-  --check                     Check if CODEMAP.md is stale
+  --check                     Check if CODEMAP.md is stale (exit 1 if stale)
   --install-hook              Install git post-merge hook
   --help, -h                  Show this help message
 
 Examples:
-  codemap .
-  codemap . --output docs/CODEMAP.md
-  codemap . --include "src/**" --exclude "**/*.test.ts"
-  codemap . --check`);
+  codemap                                     # current directory
+  codemap .                                   # explicit current directory
+  codemap ../other-repo                       # another repo
+  codemap . -o docs/CODEMAP.md                # custom output
+  codemap . --exclude "**/*.test.ts"          # skip test files
+  codemap . --check                           # CI staleness check`);
 }
 
 function parseArgs(args: string[]): CliOptions | null {
-  if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
+  if (args.includes("--help") || args.includes("-h")) {
     return null;
   }
 
@@ -103,6 +112,64 @@ function parseArgs(args: string[]): CliOptions | null {
   return options;
 }
 
+async function checkStale(rootPath: string, outputPath: string): Promise<boolean> {
+  const fullOutputPath = resolve(rootPath, outputPath);
+  if (!existsSync(fullOutputPath)) {
+    console.log("CODEMAP.md does not exist — stale");
+    return true;
+  }
+
+  const content = await Bun.file(fullOutputPath).text();
+  const commitMatch = content.match(/Commit: (\w+)/);
+  if (!commitMatch) {
+    console.log("CODEMAP.md has no commit hash — stale");
+    return true;
+  }
+
+  const mapCommit = commitMatch[1];
+  try {
+    const proc = Bun.spawnSync(["git", "rev-parse", "--short", "HEAD"], { cwd: rootPath });
+    const headCommit = proc.stdout.toString().trim();
+    if (mapCommit === headCommit) {
+      console.log(`CODEMAP.md is fresh (commit: ${headCommit})`);
+      return false;
+    } else {
+      console.log(`CODEMAP.md is stale (map: ${mapCommit}, HEAD: ${headCommit})`);
+      return true;
+    }
+  } catch {
+    console.log("Not a git repo — cannot check staleness");
+    return true;
+  }
+}
+
+async function installHook(rootPath: string): Promise<void> {
+  const hookDir = join(rootPath, ".git", "hooks");
+  if (!existsSync(hookDir)) {
+    console.error("Error: .git/hooks not found. Is this a git repo?");
+    process.exit(1);
+  }
+
+  const hookPath = join(hookDir, "post-merge");
+  const hookCommand = "#!/bin/sh\nbunx @yuzu-team/codemap .\n";
+
+  if (existsSync(hookPath)) {
+    const existing = await Bun.file(hookPath).text();
+    if (existing.includes("codemap")) {
+      console.log("Post-merge hook already installed.");
+      return;
+    }
+    // Append to existing hook
+    await Bun.write(hookPath, existing + "\n" + hookCommand);
+  } else {
+    await Bun.write(hookPath, hookCommand);
+  }
+
+  // Make executable
+  Bun.spawnSync(["chmod", "+x", hookPath]);
+  console.log(`Post-merge hook installed at ${hookPath}`);
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const options = parseArgs(args);
@@ -112,25 +179,43 @@ async function main(): Promise<void> {
     process.exit(args.includes("--help") || args.includes("-h") ? 0 : 1);
   }
 
-  // Resolve path to absolute
-  const { resolve } = await import("node:path");
   const rootPath = resolve(options.path);
 
-  // Verify the path exists
-  const { existsSync } = await import("node:fs");
   if (!existsSync(rootPath)) {
     console.error(`Error: Path '${rootPath}' does not exist`);
     process.exit(1);
   }
 
-  console.log(`codemap: analyzing ${rootPath}`);
-  console.log(`  output:  ${options.output}`);
-  if (options.include.length > 0) console.log(`  include: ${options.include.join(", ")}`);
-  if (options.exclude.length > 0) console.log(`  exclude: ${options.exclude.join(", ")}`);
-  if (options.check) console.log(`  mode:    check (stale detection)`);
+  // --install-hook
+  if (options.installHook) {
+    await installHook(rootPath);
+    return;
+  }
 
-  // TODO: Wire up scanner, parser, graph, renderer in later epics
-  console.log("\nScanner, parser, and renderer not yet implemented.");
+  // --check
+  if (options.check) {
+    const stale = await checkStale(rootPath, options.output);
+    process.exit(stale ? 1 : 0);
+  }
+
+  // Generate
+  const startTime = Date.now();
+  console.log(`codemap: analyzing ${rootPath}`);
+
+  const graph = await buildCodeGraph(rootPath, {
+    include: options.include,
+    exclude: options.exclude,
+  });
+
+  addSummaries(graph.modules, graph.files);
+
+  const markdown = renderCodemap(graph);
+  const outputPath = resolve(rootPath, options.output);
+  await Bun.write(outputPath, markdown);
+
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  console.log(`  ${graph.files.length} files, ${graph.modules.length} modules, ${graph.edges.length} edges`);
+  console.log(`  Written to ${options.output} (${elapsed}s)`);
 }
 
 main().catch((err) => {
