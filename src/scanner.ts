@@ -1,5 +1,5 @@
 /**
- * Scanner - recursively walks a directory to find TypeScript files.
+ * Scanner - recursively walks a directory to find source files (TypeScript, Python).
  * Respects .gitignore patterns and supports custom include/exclude globs.
  */
 
@@ -19,10 +19,18 @@ const DEFAULT_SKIP_DIRS = new Set([
   ".turbo",
   ".cache",
   "coverage",
+  // Python
+  "__pycache__",
+  ".venv",
+  "venv",
+  ".tox",
+  ".mypy_cache",
+  ".pytest_cache",
+  "*.egg-info",
 ]);
 
-/** Default file extensions to scan */
-const TS_EXTENSIONS = new Set([".ts", ".tsx"]);
+/** All supported file extensions (auto-detected from registered language plugins) */
+const SUPPORTED_EXTENSIONS = new Set([".ts", ".tsx", ".py"]);
 
 /** Options for the scanner */
 export interface ScanOptions {
@@ -55,8 +63,8 @@ async function loadGitignore(rootPath: string): Promise<Ignore | null> {
 /**
  * Check if a filename has a TypeScript extension.
  */
-function isTypeScriptFile(filename: string): boolean {
-  for (const ext of TS_EXTENSIONS) {
+function isSupportedFile(filename: string): boolean {
+  for (const ext of SUPPORTED_EXTENSIONS) {
     if (filename.endsWith(ext)) return true;
   }
   return false;
@@ -117,7 +125,7 @@ async function walkDirectory(
         const targetStat = await lstat(realTarget);
         if (targetStat.isDirectory()) {
           await walkDirectory(fullPath, rootPath, gitignore, excludeFilter, followSymlinks, results);
-        } else if (targetStat.isFile() && isTypeScriptFile(entry.name)) {
+        } else if (targetStat.isFile() && isSupportedFile(entry.name)) {
           results.push(relativePath);
         }
       } catch {
@@ -144,7 +152,7 @@ async function walkDirectory(
 
     if (entry.isDirectory()) {
       await walkDirectory(fullPath, rootPath, gitignore, excludeFilter, followSymlinks, results);
-    } else if (entry.isFile() && isTypeScriptFile(entry.name)) {
+    } else if (entry.isFile() && isSupportedFile(entry.name)) {
       results.push(relativePath);
     }
   }

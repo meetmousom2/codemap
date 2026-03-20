@@ -121,10 +121,25 @@ export interface ReExport {
   isNamespaceReExport: boolean;
 }
 
+/** Supported languages */
+export type Language = "typescript" | "python";
+
+/** Language plugin interface — each language implements this */
+export interface LanguagePlugin {
+  /** Language identifier */
+  language: Language;
+  /** File extensions this plugin handles (e.g. [".ts", ".tsx"]) */
+  extensions: string[];
+  /** Parse a file and extract AST information */
+  parseFile(source: string, filePath: string): Omit<FileNode, "path" | "language">;
+}
+
 /** Complete parsed information for a single file */
 export interface FileNode {
   /** File path relative to project root */
   path: string;
+  /** Detected language */
+  language: Language;
   /** All exports from this file */
   exports: Export[];
   /** All imports in this file */
