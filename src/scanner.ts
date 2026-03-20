@@ -27,10 +27,42 @@ const DEFAULT_SKIP_DIRS = new Set([
   ".mypy_cache",
   ".pytest_cache",
   "*.egg-info",
+  // Codemap
+  ".codemap",
 ]);
 
 /** All supported file extensions (auto-detected from registered language plugins) */
 const SUPPORTED_EXTENSIONS = new Set([".ts", ".tsx", ".py"]);
+
+/** Files to skip by default — config/build files that add noise to the map */
+const DEFAULT_SKIP_FILES = new Set([
+  "tsup.config.ts",
+  "vitest.config.ts",
+  "jest.config.ts",
+  "jest.config.js",
+  "vite.config.ts",
+  "vite.config.js",
+  "rollup.config.ts",
+  "rollup.config.js",
+  "webpack.config.ts",
+  "webpack.config.js",
+  "tailwind.config.ts",
+  "tailwind.config.js",
+  "postcss.config.ts",
+  "postcss.config.js",
+  "next.config.ts",
+  "next.config.js",
+  "eslint.config.ts",
+  "eslint.config.js",
+  ".eslintrc.js",
+  "prettier.config.js",
+  "drizzle.config.ts",
+  "turbo.json",
+  "setup.ts",
+  "conftest.py",
+  "setup.py",
+  "setup.cfg",
+]);
 
 /** Options for the scanner */
 export interface ScanOptions {
@@ -152,7 +184,7 @@ async function walkDirectory(
 
     if (entry.isDirectory()) {
       await walkDirectory(fullPath, rootPath, gitignore, excludeFilter, followSymlinks, results);
-    } else if (entry.isFile() && isSupportedFile(entry.name)) {
+    } else if (entry.isFile() && isSupportedFile(entry.name) && !DEFAULT_SKIP_FILES.has(entry.name)) {
       results.push(relativePath);
     }
   }

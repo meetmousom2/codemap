@@ -1,146 +1,212 @@
 #!/usr/bin/env bun
 /**
  * codemap — AST-based codebase knowledge graph generator.
- * Generates CODEMAP.md from any TypeScript/Python codebase.
  *
- * Usage: npx @yuzu-team/codemap [path] [options]
+ * Builds a cached knowledge graph of any TypeScript/Python codebase,
+ * then answers structural questions about it instantly.
+ *
+ * AI agents: use `codemap query "your question"` to get relevant context
+ * about the codebase without grepping. The graph is cached and rebuilds
+ * automatically when the code changes.
+ *
+ * Usage:
+ *   codemap [path]                    Build/update the cached graph
+ *   codemap query "question"          Query the graph for relevant files/symbols
+ *   codemap query "question" [path]   Query a specific repo
+ *   codemap --check [path]            Check if cache is stale (exit 1 if stale)
+ *   codemap --install-hook [path]     Install git post-merge hook
+ *
+ * Examples:
+ *   codemap                           # build graph for current repo
+ *   codemap query "where is auth?"    # find auth-related files
+ *   codemap query "how does retry work in workflows?"
+ *   codemap ../other-repo             # build graph for another repo
+ *
+ * The graph is saved to .codemap/graph.json and rebuilds when HEAD changes.
+ * Results are printed to stdout as compact markdown — ready for LLM consumption.
  */
 
-import { resolve, join } from "node:path";
+import { resolve, join, dirname } from "node:path";
 import { existsSync } from "node:fs";
-import type { CliOptions } from "./types";
+import { mkdir } from "node:fs/promises";
+import type { CliOptions, CodeGraph } from "./types";
 import { buildCodeGraph } from "./graph";
 import { addSummaries } from "./summarizer";
-import { renderCodemap } from "./renderer";
+import { rankFiles, renderRankedResults } from "./ranker";
 
-function printUsage(): void {
-  console.log(`codemap — AST-based codebase knowledge graph generator
-
-Usage:
-  codemap [path] [options]
-
-Arguments:
-  path                        Root directory to analyze (default: .)
-
-Options:
-  --output, -o <file>         Output file path (default: CODEMAP.md)
-  --include <glob>            Include glob pattern (can be repeated)
-  --exclude <glob>            Exclude glob pattern (can be repeated)
-  --check                     Check if CODEMAP.md is stale (exit 1 if stale)
-  --install-hook              Install git post-merge hook
-  --help, -h                  Show this help message
-
-Examples:
-  codemap                                     # current directory
-  codemap .                                   # explicit current directory
-  codemap ../other-repo                       # another repo
-  codemap . -o docs/CODEMAP.md                # custom output
-  codemap . --exclude "**/*.test.ts"          # skip test files
-  codemap . --check                           # CI staleness check`);
+interface ParsedArgs {
+  command: "build" | "query" | "check" | "install-hook" | "help";
+  path: string;
+  query?: string;
+  include: string[];
+  exclude: string[];
 }
 
-function parseArgs(args: string[]): CliOptions | null {
-  if (args.includes("--help") || args.includes("-h")) {
-    return null;
+function printUsage(): void {
+  console.log(`codemap — AST-based codebase knowledge graph for AI agents
+
+COMMANDS
+  codemap [path]                    Build/update the cached knowledge graph
+  codemap query "question" [path]   Query the graph — returns relevant files and symbols
+  codemap --check [path]            Exit 0 if cache is fresh, 1 if stale
+  codemap --install-hook [path]     Install git post-merge hook to auto-rebuild
+
+OPTIONS
+  --include <glob>    Include only matching files (repeatable)
+  --exclude <glob>    Exclude matching files (repeatable)
+  -h, --help          Show this help
+
+EXAMPLES
+  codemap                                     # build graph for .
+  codemap query "where is memory stored?"     # find memory-related code
+  codemap query "how does tool registration work?"
+  codemap query "PostgreSQL storage adapter"
+  codemap --check                             # CI freshness check
+
+AI AGENT INSTRUCTIONS
+  Use \`codemap query "your question"\` before grepping the codebase.
+  It returns a ranked list of the most relevant files with their exports,
+  classes, methods, and dependencies — typically 10-15 files in ~200 lines.
+  The graph caches at .codemap/graph.json and auto-rebuilds when HEAD changes.
+
+  Workflow:
+    1. codemap query "question"  → read stdout for relevant context
+    2. Read specific source files only if you need implementation details
+    3. Never grep blindly — query first, then drill in`);
+}
+
+function parseArgs(args: string[]): ParsedArgs | null {
+  if (args.length === 0) {
+    return { command: "build", path: ".", include: [], exclude: [] };
   }
 
-  const options: CliOptions = {
-    path: ".",
-    output: "CODEMAP.md",
-    include: [],
-    exclude: [],
-    check: false,
-    installHook: false,
-  };
+  if (args.includes("--help") || args.includes("-h")) {
+    return { command: "help", path: ".", include: [], exclude: [] };
+  }
+
+  // Check for --check
+  if (args.includes("--check")) {
+    const remaining = args.filter((a) => a !== "--check");
+    const path = remaining.find((a) => !a.startsWith("-")) ?? ".";
+    return { command: "check", path, include: [], exclude: [] };
+  }
+
+  // Check for --install-hook
+  if (args.includes("--install-hook")) {
+    const remaining = args.filter((a) => a !== "--install-hook");
+    const path = remaining.find((a) => !a.startsWith("-")) ?? ".";
+    return { command: "install-hook", path, include: [], exclude: [] };
+  }
+
+  // Check for query command
+  if (args[0] === "query") {
+    if (args.length < 2) {
+      console.error("Error: query requires a question string");
+      return null;
+    }
+    const query = args[1]!;
+    const path = args[2] ?? ".";
+    return { command: "query", path, query, include: [], exclude: [] };
+  }
+
+  // Default: build command with optional path and flags
+  const result: ParsedArgs = { command: "build", path: ".", include: [], exclude: [] };
 
   let i = 0;
-
-  // First non-flag argument is the path
   if (args[0] && !args[0].startsWith("-")) {
-    options.path = args[0];
+    result.path = args[0];
     i = 1;
   }
 
   while (i < args.length) {
     const arg = args[i]!;
-
-    switch (arg) {
-      case "--output":
-      case "-o":
-        i++;
-        if (i >= args.length) {
-          console.error("Error: --output requires a value");
-          return null;
-        }
-        options.output = args[i]!;
-        break;
-
-      case "--include":
-        i++;
-        if (i >= args.length) {
-          console.error("Error: --include requires a value");
-          return null;
-        }
-        options.include.push(args[i]!);
-        break;
-
-      case "--exclude":
-        i++;
-        if (i >= args.length) {
-          console.error("Error: --exclude requires a value");
-          return null;
-        }
-        options.exclude.push(args[i]!);
-        break;
-
-      case "--check":
-        options.check = true;
-        break;
-
-      case "--install-hook":
-        options.installHook = true;
-        break;
-
-      default:
-        console.error(`Error: Unknown option '${arg}'`);
-        return null;
+    if (arg === "--include" && i + 1 < args.length) {
+      result.include.push(args[++i]!);
+    } else if (arg === "--exclude" && i + 1 < args.length) {
+      result.exclude.push(args[++i]!);
+    } else if (!arg.startsWith("-")) {
+      result.path = arg;
     }
-
     i++;
   }
 
-  return options;
+  return result;
 }
 
-async function checkStale(rootPath: string, outputPath: string): Promise<boolean> {
-  const fullOutputPath = resolve(rootPath, outputPath);
-  if (!existsSync(fullOutputPath)) {
-    console.log("CODEMAP.md does not exist — stale");
-    return true;
-  }
+const CACHE_DIR = ".codemap";
+const CACHE_FILE = "graph.json";
 
-  const content = await Bun.file(fullOutputPath).text();
-  const commitMatch = content.match(/Commit: (\w+)/);
-  if (!commitMatch) {
-    console.log("CODEMAP.md has no commit hash — stale");
-    return true;
-  }
+async function getCacheDir(rootPath: string): Promise<string> {
+  const dir = join(rootPath, CACHE_DIR);
+  await mkdir(dir, { recursive: true });
+  return dir;
+}
 
-  const mapCommit = commitMatch[1];
+function getHeadCommit(rootPath: string): string | null {
   try {
     const proc = Bun.spawnSync(["git", "rev-parse", "--short", "HEAD"], { cwd: rootPath });
-    const headCommit = proc.stdout.toString().trim();
-    if (mapCommit === headCommit) {
-      console.log(`CODEMAP.md is fresh (commit: ${headCommit})`);
-      return false;
-    } else {
-      console.log(`CODEMAP.md is stale (map: ${mapCommit}, HEAD: ${headCommit})`);
-      return true;
-    }
+    return proc.stdout.toString().trim() || null;
   } catch {
-    console.log("Not a git repo — cannot check staleness");
+    return null;
+  }
+}
+
+async function loadCachedGraph(rootPath: string): Promise<CodeGraph | null> {
+  const cachePath = join(rootPath, CACHE_DIR, CACHE_FILE);
+  if (!existsSync(cachePath)) return null;
+
+  try {
+    const content = await Bun.file(cachePath).text();
+    const graph = JSON.parse(content) as CodeGraph;
+
+    // Check if cache is fresh
+    const headCommit = getHeadCommit(rootPath);
+    if (headCommit && graph.commitHash === headCommit) {
+      return graph;
+    }
+
+    return null; // stale
+  } catch {
+    return null;
+  }
+}
+
+async function saveGraph(rootPath: string, graph: CodeGraph): Promise<void> {
+  const cacheDir = await getCacheDir(rootPath);
+  const cachePath = join(cacheDir, CACHE_FILE);
+  await Bun.write(cachePath, JSON.stringify(graph));
+}
+
+async function ensureGraph(
+  rootPath: string,
+  options: { include?: string[]; exclude?: string[] } = {},
+): Promise<CodeGraph> {
+  // Try cache first
+  const cached = await loadCachedGraph(rootPath);
+  if (cached) {
+    return cached;
+  }
+
+  // Build fresh
+  const startTime = Date.now();
+  console.error(`codemap: building graph for ${rootPath}...`);
+  const graph = await buildCodeGraph(rootPath, options);
+  addSummaries(graph.modules, graph.files);
+  await saveGraph(rootPath, graph);
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  console.error(`codemap: ${graph.files.length} files, ${graph.modules.length} modules, ${graph.edges.length} edges (${elapsed}s)`);
+
+  return graph;
+}
+
+async function checkStale(rootPath: string): Promise<boolean> {
+  const cached = await loadCachedGraph(rootPath);
+  if (!cached) {
+    console.log("No cached graph — stale");
     return true;
   }
+  console.log(`Graph is fresh (commit: ${cached.commitHash})`);
+  return false;
 }
 
 async function installHook(rootPath: string): Promise<void> {
@@ -151,7 +217,7 @@ async function installHook(rootPath: string): Promise<void> {
   }
 
   const hookPath = join(hookDir, "post-merge");
-  const hookCommand = "#!/bin/sh\nbunx @yuzu-team/codemap .\n";
+  const hookCommand = '#!/bin/sh\nnpx @yuzu-team/codemap "$(git rev-parse --show-toplevel)"\n';
 
   if (existsSync(hookPath)) {
     const existing = await Bun.file(hookPath).text();
@@ -159,63 +225,69 @@ async function installHook(rootPath: string): Promise<void> {
       console.log("Post-merge hook already installed.");
       return;
     }
-    // Append to existing hook
     await Bun.write(hookPath, existing + "\n" + hookCommand);
   } else {
     await Bun.write(hookPath, hookCommand);
   }
 
-  // Make executable
   Bun.spawnSync(["chmod", "+x", hookPath]);
   console.log(`Post-merge hook installed at ${hookPath}`);
 }
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
-  const options = parseArgs(args);
+  const parsed = parseArgs(args);
 
-  if (!options) {
+  if (!parsed) {
     printUsage();
-    process.exit(args.includes("--help") || args.includes("-h") ? 0 : 1);
+    process.exit(1);
   }
 
-  const rootPath = resolve(options.path);
+  if (parsed.command === "help") {
+    printUsage();
+    process.exit(0);
+  }
+
+  const rootPath = resolve(parsed.path);
 
   if (!existsSync(rootPath)) {
     console.error(`Error: Path '${rootPath}' does not exist`);
     process.exit(1);
   }
 
-  // --install-hook
-  if (options.installHook) {
-    await installHook(rootPath);
-    return;
+  switch (parsed.command) {
+    case "check": {
+      const stale = await checkStale(rootPath);
+      process.exit(stale ? 1 : 0);
+    }
+
+    case "install-hook": {
+      await installHook(rootPath);
+      return;
+    }
+
+    case "build": {
+      const graph = await ensureGraph(rootPath, {
+        include: parsed.include,
+        exclude: parsed.exclude,
+      });
+      console.log(`Graph cached at ${CACHE_DIR}/${CACHE_FILE} (commit: ${graph.commitHash})`);
+      return;
+    }
+
+    case "query": {
+      const graph = await ensureGraph(rootPath, {
+        include: parsed.include,
+        exclude: parsed.exclude,
+      });
+      const ranked = rankFiles(graph, parsed.query!);
+      const output = renderRankedResults(ranked);
+      // Query results go to stdout (for piping/reading by agents)
+      // Build status goes to stderr (already handled by ensureGraph)
+      console.log(output);
+      return;
+    }
   }
-
-  // --check
-  if (options.check) {
-    const stale = await checkStale(rootPath, options.output);
-    process.exit(stale ? 1 : 0);
-  }
-
-  // Generate
-  const startTime = Date.now();
-  console.log(`codemap: analyzing ${rootPath}`);
-
-  const graph = await buildCodeGraph(rootPath, {
-    include: options.include,
-    exclude: options.exclude,
-  });
-
-  addSummaries(graph.modules, graph.files);
-
-  const markdown = renderCodemap(graph);
-  const outputPath = resolve(rootPath, options.output);
-  await Bun.write(outputPath, markdown);
-
-  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-  console.log(`  ${graph.files.length} files, ${graph.modules.length} modules, ${graph.edges.length} edges`);
-  console.log(`  Written to ${options.output} (${elapsed}s)`);
 }
 
 main().catch((err) => {
