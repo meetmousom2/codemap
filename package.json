@@ -1,8 +1,21 @@
 {
   "name": "codemap",
-  "module": "index.ts",
+  "version": "0.1.0",
+  "module": "src/index.ts",
   "type": "module",
   "private": true,
+  "bin": {
+    "codemap": "./src/index.ts"
+  },
+  "scripts": {
+    "codemap": "bun run src/index.ts",
+    "typecheck": "bunx tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "ts-morph": "^24.0.0",
+    "ignore": "^7.0.0"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },
