@@ -35,7 +35,7 @@ import { addSummaries } from "./summarizer";
 import { rankFiles, renderRankedResults } from "./ranker";
 
 interface ParsedArgs {
-  command: "build" | "query" | "check" | "install-hook" | "help";
+  command: "init" | "build" | "query" | "check" | "install-hook" | "help";
   path: string;
   query?: string;
   include: string[];
@@ -46,8 +46,10 @@ function printUsage(): void {
   console.log(`codemap — AST-based codebase knowledge graph for AI agents
 
 COMMANDS
-  codemap [path]                    Build/update the cached knowledge graph
+  codemap [path]                    Init: build graph + update .gitignore + add agent instructions
+  codemap init [path]               Same as above (explicit)
   codemap query "question" [path]   Query the graph — returns relevant files and symbols
+  codemap build [path]              Build/update the cached graph only (no init setup)
   codemap --check [path]            Exit 0 if cache is fresh, 1 if stale
   codemap --install-hook [path]     Install git post-merge hook to auto-rebuild
 
@@ -63,8 +65,14 @@ EXAMPLES
   codemap query "PostgreSQL storage adapter"
   codemap --check                             # CI freshness check
 
+SETUP (one-time)
+  npx @yuzu-team/codemap                Builds graph, updates .gitignore, adds instructions
+                                        to CLAUDE.md/AGENTS.md, installs post-merge hook.
+                                        Run this once per repo. Everything is automatic.
+
 AI AGENT INSTRUCTIONS
-  Use \`codemap query "your question"\` before grepping the codebase.
+  If .codemap/ doesn't exist, run \`npx @yuzu-team/codemap\` first to set up.
+  Then use \`codemap query "your question"\` before grepping the codebase.
   It returns a ranked list of the most relevant files with their exports,
   classes, methods, and dependencies — typically 10-15 files in ~200 lines.
   The graph caches at .codemap/graph.json and auto-rebuilds when HEAD changes.
@@ -77,11 +85,23 @@ AI AGENT INSTRUCTIONS
 
 function parseArgs(args: string[]): ParsedArgs | null {
   if (args.length === 0) {
-    return { command: "build", path: ".", include: [], exclude: [] };
+    return { command: "init", path: ".", include: [], exclude: [] };
+  }
+
+  // init command
+  if (args[0] === "init") {
+    const path = args[1] ?? ".";
+    return { command: "init", path, include: [], exclude: [] };
   }
 
   if (args.includes("--help") || args.includes("-h")) {
     return { command: "help", path: ".", include: [], exclude: [] };
+  }
+
+  // build command (explicit)
+  if (args[0] === "build") {
+    const path = args[1] ?? ".";
+    return { command: "build", path, include: [], exclude: [] };
   }
 
   // Check for --check
@@ -231,7 +251,93 @@ async function installHook(rootPath: string): Promise<void> {
   }
 
   Bun.spawnSync(["chmod", "+x", hookPath]);
-  console.log(`Post-merge hook installed at ${hookPath}`);
+  console.log(`  Post-merge hook installed`);
+}
+
+const CODEMAP_INSTRUCTION = `## Before exploring code
+Run \`npx @yuzu-team/codemap query "your question"\` before grepping the codebase.
+Returns ranked relevant files with exports, classes, methods, and dependencies (~200 lines).
+`;
+
+/**
+ * Full init: build graph + gitignore + agent instructions + hook.
+ * This is the one-command setup for any repo.
+ */
+async function initRepo(rootPath: string, options: { include?: string[]; exclude?: string[] }): Promise<void> {
+  console.log("codemap init: setting up for", rootPath);
+  console.log("");
+
+  // 1. Build graph
+  const graph = await ensureGraph(rootPath, options);
+  console.log(`  Graph: ${graph.files.length} files, ${graph.modules.length} modules`);
+
+  // 2. Add .codemap/ to .gitignore
+  const gitignorePath = join(rootPath, ".gitignore");
+  if (existsSync(gitignorePath)) {
+    const content = await Bun.file(gitignorePath).text();
+    if (!content.includes(".codemap")) {
+      await Bun.write(gitignorePath, content.trimEnd() + "\n.codemap/\n");
+      console.log("  Added .codemap/ to .gitignore");
+    } else {
+      console.log("  .gitignore already has .codemap/");
+    }
+  } else {
+    await Bun.write(gitignorePath, ".codemap/\n");
+    console.log("  Created .gitignore with .codemap/");
+  }
+
+  // 3. Add instruction to CLAUDE.md and/or AGENTS.md
+  let addedTo: string[] = [];
+
+  for (const file of ["CLAUDE.md", "AGENTS.md"]) {
+    const filePath = join(rootPath, file);
+    if (existsSync(filePath)) {
+      const content = await Bun.file(filePath).text();
+      if (content.includes("codemap query")) {
+        console.log(`  ${file} already has codemap instructions`);
+      } else {
+        // Find insertion point: after first heading block (heading + blank lines)
+        const lines = content.split("\n");
+        let insertIdx = 0;
+        // Skip to end of first heading (# line + any immediately following non-blank lines)
+        for (let j = 0; j < lines.length; j++) {
+          if (lines[j]!.startsWith("#")) {
+            insertIdx = j + 1;
+            // Skip blank lines after heading
+            while (insertIdx < lines.length && lines[insertIdx]!.trim() === "") {
+              insertIdx++;
+            }
+            break;
+          }
+        }
+        lines.splice(insertIdx, 0, "", ...CODEMAP_INSTRUCTION.split("\n"), "");
+        await Bun.write(filePath, lines.join("\n"));
+        addedTo.push(file);
+        console.log(`  Added codemap instructions to ${file}`);
+      }
+    }
+  }
+
+  // If neither CLAUDE.md nor AGENTS.md exists, create AGENTS.md
+  if (addedTo.length === 0) {
+    const agentsPath = join(rootPath, "AGENTS.md");
+    if (!existsSync(agentsPath)) {
+      await Bun.write(agentsPath, `# Agent Instructions\n\n${CODEMAP_INSTRUCTION}`);
+      console.log("  Created AGENTS.md with codemap instructions");
+    }
+  }
+
+  // 4. Install post-merge hook
+  const hookDir = join(rootPath, ".git", "hooks");
+  if (existsSync(hookDir)) {
+    await installHook(rootPath);
+  } else {
+    console.log("  No .git/hooks — skipping post-merge hook");
+  }
+
+  console.log("");
+  console.log("Done! AI agents will now use codemap automatically.");
+  console.log("Run `codemap query \"your question\"` to test it.");
 }
 
 async function main(): Promise<void> {
@@ -256,6 +362,11 @@ async function main(): Promise<void> {
   }
 
   switch (parsed.command) {
+    case "init": {
+      await initRepo(rootPath, { include: parsed.include, exclude: parsed.exclude });
+      return;
+    }
+
     case "check": {
       const stale = await checkStale(rootPath);
       process.exit(stale ? 1 : 0);
