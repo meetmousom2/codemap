@@ -1,6 +1,9 @@
 /**
  * Semantic embeddings — optional semantic search using Transformers.js.
  * Uses all-MiniLM-L6-v2 (384-dim) via ONNX WASM, runs entirely in-process.
+ *
+ * Supports incremental updates: only re-embeds files whose content changed
+ * since the last cached commit.
  */
 
 import { join } from "node:path";
@@ -22,9 +25,14 @@ const MODEL_ID = "Xenova/all-MiniLM-L6-v2";
 const CACHE_DIR_NAME = "models";
 const EMBEDDINGS_FILE = "embeddings.json";
 
-interface EmbeddingsCache {
+export interface EmbeddingsCache {
   commitHash: string;
   files: Record<string, { embedding: number[]; contentHash: string }>;
+}
+
+/** Extended cache result that includes the count of newly embedded files. */
+export interface EmbeddingsCacheResult extends EmbeddingsCache {
+  embeddedCount: number;
 }
 
 /**
@@ -68,6 +76,15 @@ export function buildFileText(file: FileNode): string {
   }
 
   return parts.join(" ");
+}
+
+/**
+ * Compute a content hash for a file's text representation.
+ * Used to detect whether a file needs re-embedding.
+ */
+export function computeContentHash(file: FileNode): string {
+  const text = buildFileText(file);
+  return Bun.hash(text).toString(36);
 }
 
 /**
@@ -121,21 +138,46 @@ async function embedText(text: string, rootPath: string): Promise<number[]> {
 }
 
 /**
- * Embed all files in the graph, returning a map of filePath -> embedding vector.
+ * Build or incrementally update embeddings for a set of files.
+ *
+ * When existingCache is null, embeds all files from scratch.
+ * When existingCache is provided, only re-embeds files whose contentHash changed,
+ * adds new files, and prunes deleted files.
+ *
+ * The embedder parameter allows injection of a mock for testing.
  */
-async function embedFiles(
+export async function buildIncrementalEmbeddings(
   files: FileNode[],
-  rootPath: string,
-): Promise<Map<string, number[]>> {
-  const model = await loadModel(rootPath);
-  const result = new Map<string, number[]>();
+  existingCache: EmbeddingsCache | null,
+  commitHash: string,
+  embedder: (text: string) => number[] | Promise<number[]>,
+): Promise<EmbeddingsCacheResult> {
+  const result: EmbeddingsCacheResult = {
+    commitHash,
+    files: {},
+    embeddedCount: 0,
+  };
+
+  const currentPaths = new Set(files.map((f) => f.path));
 
   for (const file of files) {
     const text = buildFileText(file);
-    const output = await model(text, { pooling: "mean", normalize: true });
-    const embedding = Array.from(output.data as Float32Array).slice(0, 384);
-    result.set(file.path, embedding);
+    const contentHash = computeContentHash(file);
+
+    // Check if cached embedding is still valid
+    const cached = existingCache?.files[file.path];
+    if (cached && cached.contentHash === contentHash) {
+      // Reuse cached embedding
+      result.files[file.path] = { embedding: cached.embedding, contentHash };
+    } else {
+      // New or changed file — embed it
+      const embedding = await embedder(text);
+      result.files[file.path] = { embedding, contentHash };
+      result.embeddedCount++;
+    }
   }
+
+  // Deleted files are implicitly pruned — we only iterate over current files
 
   return result;
 }
@@ -232,7 +274,7 @@ function computePageRank(
 /**
  * Rank files semantically using embeddings + PageRank.
  *
- * 1. Load or build embeddings cache
+ * 1. Load or incrementally update embeddings cache
  * 2. Embed the query
  * 3. Score each file by cosine similarity
  * 4. Combine with PageRank: cosineSim * (1 + prScore * 10)
@@ -246,29 +288,45 @@ export async function semanticRank(
   const rootPath = graph.root;
   const commitHash = getHeadCommit(rootPath);
 
-  // Load or build embeddings
+  // Load existing cache (may be null, stale, or fresh)
+  const existingCache = await loadEmbeddingsCache(rootPath);
+
   let fileEmbeddings: Map<string, number[]>;
-  const cached = await loadEmbeddingsCache(rootPath);
 
-  if (cached && cached.commitHash === commitHash) {
-    // Use cached embeddings
-    fileEmbeddings = new Map(Object.entries(cached.files).map(
-      ([path, entry]) => [path, entry.embedding],
-    ));
+  if (existingCache && existingCache.commitHash === commitHash) {
+    // Cache is fresh — use it directly
+    fileEmbeddings = new Map(
+      Object.entries(existingCache.files).map(([path, entry]) => [path, entry.embedding]),
+    );
   } else {
-    // Build fresh embeddings
-    console.error("codemap: building semantic index (first run)...");
-    fileEmbeddings = await embedFiles(graph.files, rootPath);
-
-    // Save cache
-    const cacheData: EmbeddingsCache = {
-      commitHash: commitHash ?? "unknown",
-      files: {},
-    };
-    for (const [path, embedding] of fileEmbeddings) {
-      cacheData.files[path] = { embedding, contentHash: "" };
+    // Cache is missing or stale — do incremental update
+    if (!existingCache) {
+      console.error("codemap: building semantic index (first run)...");
+    } else {
+      // Stale cache — will do incremental
     }
-    await saveEmbeddingsCache(rootPath, cacheData);
+
+    const embedder = async (text: string) => embedText(text, rootPath);
+    const result = await buildIncrementalEmbeddings(
+      graph.files,
+      existingCache,
+      commitHash ?? "unknown",
+      embedder,
+    );
+
+    if (existingCache && result.embeddedCount > 0) {
+      console.error(`codemap: updating semantic index (${result.embeddedCount} files changed)...`);
+    } else if (!existingCache) {
+      console.error(`codemap: semantic index built (${result.embeddedCount} files)`);
+    }
+
+    // Save updated cache (strip embeddedCount — it's not part of the persisted format)
+    const { embeddedCount: _, ...cacheToSave } = result;
+    await saveEmbeddingsCache(rootPath, cacheToSave);
+
+    fileEmbeddings = new Map(
+      Object.entries(result.files).map(([path, entry]) => [path, entry.embedding]),
+    );
   }
 
   // Embed the query
