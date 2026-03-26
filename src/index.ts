@@ -34,9 +34,10 @@ import { buildCodeGraph } from "./graph";
 import { addSummaries } from "./summarizer";
 import { rankFiles, renderRankedResults, tokenize } from "./ranker";
 import { renderSkeleton, renderDeps } from "./skeleton-deps";
+import { renderImpact } from "./impact";
 
 interface ParsedArgs {
-  command: "init" | "build" | "query" | "skeleton" | "deps" | "check" | "install-hook" | "help";
+  command: "init" | "build" | "query" | "skeleton" | "deps" | "impact" | "check" | "install-hook" | "help";
   path: string;
   query?: string;
   include: string[];
@@ -53,6 +54,7 @@ COMMANDS
   codemap build [path]              Build/update the cached graph only (no init setup)
   codemap skeleton <file> [path]    Show file skeleton: exports, classes, types
   codemap deps <file> [path]        Show file dependencies: imports from + imported by
+  codemap impact <symbol> [path]    Show blast radius: what files/functions use a symbol
   codemap --check [path]            Exit 0 if cache is fresh, 1 if stale
   codemap --install-hook [path]     Install git post-merge hook to auto-rebuild
 
@@ -141,6 +143,17 @@ function parseArgs(args: string[]): ParsedArgs | null {
     const query = args[1]!;
     const path = args[2] ?? ".";
     return { command: "deps", path, query, include: [], exclude: [] };
+  }
+
+  // impact command
+  if (args[0] === "impact") {
+    if (args.length < 2) {
+      console.error("Error: impact requires a symbol name");
+      return null;
+    }
+    const query = args[1]!;
+    const path = args[2] ?? ".";
+    return { command: "impact", path, query, include: [], exclude: [] };
   }
 
   // Check for query command
@@ -438,14 +451,26 @@ async function main(): Promise<void> {
     }
 
     case "deps": {
-      const cachePath = join(rootPath, CACHE_DIR, CACHE_FILE);
-      if (!existsSync(cachePath)) {
+      const cachePath2 = join(rootPath, CACHE_DIR, CACHE_FILE);
+      if (!existsSync(cachePath2)) {
         console.error("Error: no cached graph found. Run `codemap` first to build the graph.");
         process.exit(1);
       }
-      const graphJson = await Bun.file(cachePath).text();
-      const graph = JSON.parse(graphJson) as CodeGraph;
-      console.log(renderDeps(graph, parsed.query!));
+      const graphJson2 = await Bun.file(cachePath2).text();
+      const graph2 = JSON.parse(graphJson2) as CodeGraph;
+      console.log(renderDeps(graph2, parsed.query!));
+      return;
+    }
+
+    case "impact": {
+      const cachePath3 = join(rootPath, CACHE_DIR, CACHE_FILE);
+      if (!existsSync(cachePath3)) {
+        console.error("Error: no cached graph found. Run `codemap` first to build the graph.");
+        process.exit(1);
+      }
+      const graphJson3 = await Bun.file(cachePath3).text();
+      const graph3 = JSON.parse(graphJson3) as CodeGraph;
+      console.log(renderImpact(graph3, parsed.query!));
       return;
     }
   }
