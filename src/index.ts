@@ -33,9 +33,10 @@ import type { CliOptions, CodeGraph } from "./types";
 import { buildCodeGraph } from "./graph";
 import { addSummaries } from "./summarizer";
 import { rankFiles, renderRankedResults, tokenize } from "./ranker";
+import { renderSkeleton, renderDeps } from "./skeleton-deps";
 
 interface ParsedArgs {
-  command: "init" | "build" | "query" | "check" | "install-hook" | "help";
+  command: "init" | "build" | "query" | "skeleton" | "deps" | "check" | "install-hook" | "help";
   path: string;
   query?: string;
   include: string[];
@@ -50,6 +51,8 @@ COMMANDS
   codemap init [path]               Same as above (explicit)
   codemap query "question" [path]   Query the graph — returns relevant files and symbols
   codemap build [path]              Build/update the cached graph only (no init setup)
+  codemap skeleton <file> [path]    Show file skeleton: exports, classes, types
+  codemap deps <file> [path]        Show file dependencies: imports from + imported by
   codemap --check [path]            Exit 0 if cache is fresh, 1 if stale
   codemap --install-hook [path]     Install git post-merge hook to auto-rebuild
 
@@ -116,6 +119,28 @@ function parseArgs(args: string[]): ParsedArgs | null {
     const remaining = args.filter((a) => a !== "--install-hook");
     const path = remaining.find((a) => !a.startsWith("-")) ?? ".";
     return { command: "install-hook", path, include: [], exclude: [] };
+  }
+
+  // skeleton command
+  if (args[0] === "skeleton") {
+    if (args.length < 2) {
+      console.error("Error: skeleton requires a file path");
+      return null;
+    }
+    const query = args[1]!;
+    const path = args[2] ?? ".";
+    return { command: "skeleton", path, query, include: [], exclude: [] };
+  }
+
+  // deps command
+  if (args[0] === "deps") {
+    if (args.length < 2) {
+      console.error("Error: deps requires a file path");
+      return null;
+    }
+    const query = args[1]!;
+    const path = args[2] ?? ".";
+    return { command: "deps", path, query, include: [], exclude: [] };
   }
 
   // Check for query command
@@ -397,6 +422,30 @@ async function main(): Promise<void> {
       // Query results go to stdout (for piping/reading by agents)
       // Build status goes to stderr (already handled by ensureGraph)
       console.log(output);
+      return;
+    }
+
+    case "skeleton": {
+      const cachePath = join(rootPath, CACHE_DIR, CACHE_FILE);
+      if (!existsSync(cachePath)) {
+        console.error("Error: no cached graph found. Run `codemap` first to build the graph.");
+        process.exit(1);
+      }
+      const graphJson = await Bun.file(cachePath).text();
+      const graph = JSON.parse(graphJson) as CodeGraph;
+      console.log(renderSkeleton(graph, parsed.query!));
+      return;
+    }
+
+    case "deps": {
+      const cachePath = join(rootPath, CACHE_DIR, CACHE_FILE);
+      if (!existsSync(cachePath)) {
+        console.error("Error: no cached graph found. Run `codemap` first to build the graph.");
+        process.exit(1);
+      }
+      const graphJson = await Bun.file(cachePath).text();
+      const graph = JSON.parse(graphJson) as CodeGraph;
+      console.log(renderDeps(graph, parsed.query!));
       return;
     }
   }
