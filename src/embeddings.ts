@@ -195,6 +195,13 @@ function getHeadCommit(rootPath: string): string | null {
 }
 
 /**
+ * Check if an embeddings cache file exists (does not load it).
+ */
+export function hasEmbeddingsCache(rootPath: string): boolean {
+  return existsSync(join(rootPath, ".codemap", EMBEDDINGS_FILE));
+}
+
+/**
  * Load embeddings cache from disk.
  */
 async function loadEmbeddingsCache(rootPath: string): Promise<EmbeddingsCache | null> {
@@ -373,4 +380,74 @@ export async function semanticRank(
   return ranked
     .sort((a, b) => b.score - a.score)
     .slice(0, maxResults);
+}
+
+/**
+ * Hybrid rank: fuse BM25 and semantic results using Reciprocal Rank Fusion (RRF).
+ *
+ * RRF score for a file = sum over each ranking list of 1/(k + rank_position).
+ * k=60 is standard. Files appearing in both lists get boosted; files in only one
+ * still contribute. This is simple, parameter-free, and well-studied in IR literature.
+ *
+ * If embeddings cache doesn't exist, triggers a background build and returns BM25 only.
+ */
+export async function hybridRank(
+  graph: CodeGraph,
+  query: string,
+  bm25Results: RankedFile[],
+  maxResults: number = 20,
+): Promise<RankedFile[]> {
+  const rootPath = graph.root;
+
+  // If no embeddings cache, build in background and return BM25 only
+  if (!hasEmbeddingsCache(rootPath)) {
+    // Fire-and-forget: build embeddings for next time
+    semanticRank(graph, query, maxResults).catch(() => {});
+    console.error("codemap: building semantic index in background for future queries...");
+    return bm25Results;
+  }
+
+  // Run semantic search
+  let semanticResults: RankedFile[];
+  try {
+    semanticResults = await semanticRank(graph, query, maxResults * 2);
+  } catch {
+    // Semantic failed — return BM25 only
+    return bm25Results;
+  }
+
+  // Reciprocal Rank Fusion (k=60)
+  const k = 60;
+  const rrfScores = new Map<string, { score: number; file: FileNode; matchedTerms: string[] }>();
+
+  // Score from BM25 ranking
+  for (let i = 0; i < bm25Results.length; i++) {
+    const entry = bm25Results[i]!;
+    const path = entry.file.path;
+    const existing = rrfScores.get(path);
+    const rrfContribution = 1 / (k + i + 1);
+    if (existing) {
+      existing.score += rrfContribution;
+    } else {
+      rrfScores.set(path, { score: rrfContribution, file: entry.file, matchedTerms: entry.matchedTerms });
+    }
+  }
+
+  // Score from semantic ranking
+  for (let i = 0; i < semanticResults.length; i++) {
+    const entry = semanticResults[i]!;
+    const path = entry.file.path;
+    const existing = rrfScores.get(path);
+    const rrfContribution = 1 / (k + i + 1);
+    if (existing) {
+      existing.score += rrfContribution;
+    } else {
+      rrfScores.set(path, { score: rrfContribution, file: entry.file, matchedTerms: [] });
+    }
+  }
+
+  return [...rrfScores.values()]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, maxResults)
+    .map(({ file, score, matchedTerms }) => ({ file, score, matchedTerms }));
 }

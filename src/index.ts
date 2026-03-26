@@ -35,7 +35,7 @@ import { addSummaries } from "./summarizer";
 import { rankFiles, renderRankedResults, tokenize } from "./ranker";
 import { renderSkeleton, renderDeps } from "./skeleton-deps";
 import { renderImpact } from "./impact";
-import { semanticRank } from "./embeddings";
+import { hybridRank } from "./embeddings";
 
 interface ParsedArgs {
   command: "init" | "build" | "query" | "skeleton" | "deps" | "impact" | "check" | "install-hook" | "help";
@@ -44,7 +44,6 @@ interface ParsedArgs {
   budget?: number;
   include: string[];
   exclude: string[];
-  semantic: boolean;
 }
 
 function printUsage(): void {
@@ -62,7 +61,6 @@ COMMANDS
   codemap --install-hook [path]     Install git post-merge hook to auto-rebuild
 
 OPTIONS
-  --semantic          Use semantic search (requires model download on first use)
   --include <glob>    Include only matching files (repeatable)
   --exclude <glob>    Exclude matching files (repeatable)
   --budget <tokens>   Cap output to approximate token count (progressive degradation)
@@ -96,37 +94,37 @@ AI AGENT INSTRUCTIONS
 
 function parseArgs(args: string[]): ParsedArgs | null {
   if (args.length === 0) {
-    return { command: "init", path: ".", include: [], exclude: [], semantic: false };
+    return { command: "init", path: ".", include: [], exclude: [] };
   }
 
   // init command
   if (args[0] === "init") {
     const path = args[1] ?? ".";
-    return { command: "init", path, include: [], exclude: [], semantic: false };
+    return { command: "init", path, include: [], exclude: [] };
   }
 
   if (args.includes("--help") || args.includes("-h")) {
-    return { command: "help", path: ".", include: [], exclude: [], semantic: false };
+    return { command: "help", path: ".", include: [], exclude: [] };
   }
 
   // build command (explicit)
   if (args[0] === "build") {
     const path = args[1] ?? ".";
-    return { command: "build", path, include: [], exclude: [], semantic: false };
+    return { command: "build", path, include: [], exclude: [] };
   }
 
   // Check for --check
   if (args.includes("--check")) {
     const remaining = args.filter((a) => a !== "--check");
     const path = remaining.find((a) => !a.startsWith("-")) ?? ".";
-    return { command: "check", path, include: [], exclude: [], semantic: false };
+    return { command: "check", path, include: [], exclude: [] };
   }
 
   // Check for --install-hook
   if (args.includes("--install-hook")) {
     const remaining = args.filter((a) => a !== "--install-hook");
     const path = remaining.find((a) => !a.startsWith("-")) ?? ".";
-    return { command: "install-hook", path, include: [], exclude: [], semantic: false };
+    return { command: "install-hook", path, include: [], exclude: [] };
   }
 
   // skeleton command
@@ -137,7 +135,7 @@ function parseArgs(args: string[]): ParsedArgs | null {
     }
     const query = args[1]!;
     const path = args[2] ?? ".";
-    return { command: "skeleton", path, query, include: [], exclude: [], semantic: false };
+    return { command: "skeleton", path, query, include: [], exclude: [] };
   }
 
   // deps command
@@ -148,7 +146,7 @@ function parseArgs(args: string[]): ParsedArgs | null {
     }
     const query = args[1]!;
     const path = args[2] ?? ".";
-    return { command: "deps", path, query, include: [], exclude: [], semantic: false };
+    return { command: "deps", path, query, include: [], exclude: [] };
   }
 
   // impact command
@@ -159,14 +157,12 @@ function parseArgs(args: string[]): ParsedArgs | null {
     }
     const query = args[1]!;
     const path = args[2] ?? ".";
-    return { command: "impact", path, query, include: [], exclude: [], semantic: false };
+    return { command: "impact", path, query, include: [], exclude: [] };
   }
 
   // Check for query command
   if (args[0] === "query") {
-    const semantic = args.includes("--semantic");
-
-    // Parse query args: query [--budget N] [--semantic] [--include G] [--exclude G] "question" [path]
+    // Parse query args: query [--budget N] [--include G] [--exclude G] "question" [path]
     let query: string | undefined;
     let path = ".";
     let budget: number | undefined;
@@ -176,9 +172,7 @@ function parseArgs(args: string[]): ParsedArgs | null {
     let i = 1;
     while (i < args.length) {
       const arg = args[i]!;
-      if (arg === "--semantic") {
-        // already handled above
-      } else if (arg === "--budget" && i + 1 < args.length) {
+      if (arg === "--budget" && i + 1 < args.length) {
         budget = parseInt(args[++i]!, 10);
         if (isNaN(budget) || budget <= 0) {
           console.error("Error: --budget requires a positive number");
@@ -203,11 +197,11 @@ function parseArgs(args: string[]): ParsedArgs | null {
       return null;
     }
 
-    return { command: "query", path, query, budget, include, exclude, semantic };
+    return { command: "query", path, query, budget, include, exclude };
   }
 
   // Default: build command with optional path and flags
-  const result: ParsedArgs = { command: "build", path: ".", include: [], exclude: [], semantic: false };
+  const result: ParsedArgs = { command: "build", path: ".", include: [], exclude: [] };
 
   let i = 0;
   if (args[0] && !args[0].startsWith("-")) {
@@ -470,18 +464,9 @@ async function main(): Promise<void> {
         exclude: parsed.exclude,
       });
 
-      let ranked;
-      if (parsed.semantic) {
-        try {
-          ranked = await semanticRank(graph, parsed.query!);
-        } catch (err) {
-          console.error("codemap: semantic search failed, falling back to keyword search");
-          console.error(String(err));
-          ranked = rankFiles(graph, parsed.query!);
-        }
-      } else {
-        ranked = rankFiles(graph, parsed.query!);
-      }
+      // Always run BM25, then fuse with semantic if cache exists
+      const bm25Ranked = rankFiles(graph, parsed.query!);
+      const ranked = await hybridRank(graph, parsed.query!, bm25Ranked);
 
       const queryTerms = tokenize(parsed.query!);
       const output = renderRankedResults(ranked, graph.root, queryTerms, 10, 200, parsed.budget);
