@@ -355,57 +355,63 @@ function extractMatchingLines(
 }
 
 /**
- * Render ranked results as compact markdown for LLM consumption.
- * Includes file summary, key exports, matching body lines, and why it matched.
- *
- * @param rootPath - project root, needed to read source files for body line matching
- * @param queryTerms - tokenized query terms for body line extraction
+ * Estimate token count using a simple heuristic: 1 token ~ 4 characters.
  */
-export function renderRankedResults(
-  ranked: RankedFile[],
+export function estimateTokens(text: string): number {
+  if (text.length === 0) return 0;
+  return Math.ceil(text.length / 4);
+}
+
+/** Detail level for progressive degradation. */
+type DetailLevel = 1 | 2 | 3;
+
+/**
+ * Render a single ranked file at a given detail level.
+ *
+ * Level 3 (full): summary, exports (max 10), class details (max 8 methods), body lines, dependencies
+ * Level 2 (signatures): summary + export signatures only, no class methods, no body lines, no deps
+ * Level 1 (file list): file path + one-line summary only
+ */
+function renderFileAtLevel(
+  entry: RankedFile,
+  level: DetailLevel,
   rootPath?: string,
   queryTerms?: string[],
-  maxFiles: number = 10,
-  maxLines: number = 200,
 ): string {
+  const { file, matchedTerms } = entry;
+  const fileName = file.path;
+  const summary = summarizeFile(file);
+  const matchInfo = matchedTerms.length > 0 ? ` [matched: ${matchedTerms.join(", ")}]` : "";
+
+  if (level === 1) {
+    return `## ${fileName}${matchInfo}\n${summary}\n`;
+  }
+
   const lines: string[] = [];
-  let fileCount = 0;
+  lines.push(`## ${fileName}${matchInfo}`);
+  lines.push(`${summary}`);
+  lines.push("");
 
-  for (const { file, matchedTerms } of ranked) {
-    if (fileCount >= maxFiles || lines.length >= maxLines) break;
-
-    const fileName = file.path;
-    const summary = summarizeFile(file);
-    const matchInfo = matchedTerms.length > 0 ? ` [matched: ${matchedTerms.join(", ")}]` : "";
-
-    lines.push(`## ${fileName}${matchInfo}`);
-    lines.push(`${summary}`);
-    lines.push("");
-    // line count tracked by lines.length
-
-    // Show exports — cap at 10 per file, truncate long signatures
-    if (file.exports.length > 0) {
-      const exportsToShow = file.exports.slice(0, 10);
-      for (const exp of exportsToShow) {
-        let sig = exp.signature.replace(/\n\s*/g, " ");
-        if (sig.length > 120) sig = sig.slice(0, 117) + "...";
-        lines.push(`- \`${sig}\``);
-        if (exp.jsdoc) lines.push(`  ${exp.jsdoc.split("\n")[0]}`);
-        // tracked
-      }
-      if (file.exports.length > 10) {
-        lines.push(`- _... ${file.exports.length - 10} more exports_`);
-        // tracked
-      }
-      lines.push("");
-      // tracked
+  // Show exports — cap at 10 per file, truncate long signatures
+  if (file.exports.length > 0) {
+    const exportsToShow = file.exports.slice(0, 10);
+    for (const exp of exportsToShow) {
+      let sig = exp.signature.replace(/\n\s*/g, " ");
+      if (sig.length > 120) sig = sig.slice(0, 117) + "...";
+      lines.push(`- \`${sig}\``);
+      if (level === 3 && exp.jsdoc) lines.push(`  ${exp.jsdoc.split("\n")[0]}`);
     }
+    if (file.exports.length > 10) {
+      lines.push(`- _... ${file.exports.length - 10} more exports_`);
+    }
+    lines.push("");
+  }
 
+  if (level === 3) {
     // Show class details
     for (const cls of file.classes) {
       const ext = cls.extends ? ` extends ${cls.extends}` : "";
       lines.push(`**class ${cls.name}${ext}**`);
-      // tracked
 
       const methodsToShow = cls.methods.slice(0, 8);
       for (const method of methodsToShow) {
@@ -417,7 +423,6 @@ export function renderRankedResults(
         lines.push(`- _... ${cls.methods.length - 8} more methods_`);
       }
       lines.push("");
-      // tracked
     }
 
     // Show matching body lines from source (implementation details)
@@ -441,7 +446,152 @@ export function renderRankedResults(
       }))].sort();
       lines.push(`**Depends on:** ${dirs.slice(0, 8).join(", ")}${dirs.length > 8 ? ` +${dirs.length - 8}` : ""}`);
       lines.push("");
-      // tracked
+    }
+  }
+
+  lines.push("---");
+  lines.push("");
+  return lines.join("\n");
+}
+
+/**
+ * Render ranked results as compact markdown for LLM consumption.
+ * Includes file summary, key exports, matching body lines, and why it matched.
+ *
+ * When `budget` is specified, progressively degrades output detail to fit:
+ *   Level 3 (full) -> Level 2 (signatures) -> Level 1 (file list) -> reduce file count
+ * At each level, tries reducing maxFiles before dropping a detail level.
+ *
+ * @param rootPath - project root, needed to read source files for body line matching
+ * @param queryTerms - tokenized query terms for body line extraction
+ * @param budget - optional token budget; if omitted, uses maxLines cap (default behavior)
+ */
+export function renderRankedResults(
+  ranked: RankedFile[],
+  rootPath?: string,
+  queryTerms?: string[],
+  maxFiles: number = 10,
+  maxLines: number = 200,
+  budget?: number,
+): string {
+  if (ranked.length === 0) return "";
+
+  // Without budget, use the original line-cap behavior
+  if (budget === undefined) {
+    return renderWithLineCap(ranked, rootPath, queryTerms, maxFiles, maxLines);
+  }
+
+  // With budget: progressive degradation
+  const filesToRender = ranked.slice(0, maxFiles);
+  const levels: DetailLevel[] = [3, 2, 1];
+
+  for (const level of levels) {
+    // Try rendering at this level, reducing file count if needed
+    for (let count = filesToRender.length; count >= 1; count--) {
+      const output = renderAtLevel(filesToRender.slice(0, count), level, rootPath, queryTerms, ranked.length);
+      if (estimateTokens(output) <= budget) {
+        return output;
+      }
+    }
+  }
+
+  // Even 1 file at level 1 doesn't fit — return as much as possible
+  return renderAtLevel(filesToRender.slice(0, 1), 1, rootPath, queryTerms, ranked.length);
+}
+
+/** Render N files at a given detail level, with truncation note. */
+function renderAtLevel(
+  files: RankedFile[],
+  level: DetailLevel,
+  rootPath?: string,
+  queryTerms?: string[],
+  totalRanked: number = 0,
+): string {
+  const parts: string[] = [];
+  for (const entry of files) {
+    parts.push(renderFileAtLevel(entry, level, rootPath, queryTerms));
+  }
+  if (totalRanked > files.length) {
+    parts.push(`_${totalRanked - files.length} more files matched but were truncated._`);
+  }
+  return parts.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
+}
+
+/** Original line-cap rendering (no budget). Preserves backward-compatible behavior. */
+function renderWithLineCap(
+  ranked: RankedFile[],
+  rootPath?: string,
+  queryTerms?: string[],
+  maxFiles: number = 10,
+  maxLines: number = 200,
+): string {
+  const lines: string[] = [];
+  let fileCount = 0;
+
+  for (const { file, matchedTerms } of ranked) {
+    if (fileCount >= maxFiles || lines.length >= maxLines) break;
+
+    const fileName = file.path;
+    const summary = summarizeFile(file);
+    const matchInfo = matchedTerms.length > 0 ? ` [matched: ${matchedTerms.join(", ")}]` : "";
+
+    lines.push(`## ${fileName}${matchInfo}`);
+    lines.push(`${summary}`);
+    lines.push("");
+
+    // Show exports — cap at 10 per file, truncate long signatures
+    if (file.exports.length > 0) {
+      const exportsToShow = file.exports.slice(0, 10);
+      for (const exp of exportsToShow) {
+        let sig = exp.signature.replace(/\n\s*/g, " ");
+        if (sig.length > 120) sig = sig.slice(0, 117) + "...";
+        lines.push(`- \`${sig}\``);
+        if (exp.jsdoc) lines.push(`  ${exp.jsdoc.split("\n")[0]}`);
+      }
+      if (file.exports.length > 10) {
+        lines.push(`- _... ${file.exports.length - 10} more exports_`);
+      }
+      lines.push("");
+    }
+
+    // Show class details
+    for (const cls of file.classes) {
+      const ext = cls.extends ? ` extends ${cls.extends}` : "";
+      lines.push(`**class ${cls.name}${ext}**`);
+
+      const methodsToShow = cls.methods.slice(0, 8);
+      for (const method of methodsToShow) {
+        const async_ = method.isAsync ? "async " : "";
+        const params = method.params.map((p) => `${p.name}: ${p.type}`).join(", ");
+        lines.push(`- ${async_}${method.name}(${params}): ${method.returnType}`);
+      }
+      if (cls.methods.length > 8) {
+        lines.push(`- _... ${cls.methods.length - 8} more methods_`);
+      }
+      lines.push("");
+    }
+
+    // Show matching body lines from source (implementation details)
+    if (rootPath && queryTerms && queryTerms.length > 0) {
+      const bodyHits = extractMatchingLines(rootPath, file.path, queryTerms);
+      if (bodyHits.length > 0) {
+        lines.push("**Key lines:**");
+        for (const hit of bodyHits) {
+          lines.push(hit);
+        }
+        lines.push("");
+      }
+    }
+
+    // Show imports — compact, just unique module dirs
+    const internalImports = file.imports.filter((i) => i.resolvedPath);
+    if (internalImports.length > 0) {
+      const dirs = [...new Set(internalImports.map((i) => {
+        const parts = i.resolvedPath!.split("/");
+        return parts.slice(0, -1).join("/") || parts[0];
+      }))].sort();
+      lines.push(`**Depends on:** ${dirs.slice(0, 8).join(", ")}${dirs.length > 8 ? ` +${dirs.length - 8}` : ""}`);
+      lines.push("");
     }
 
     lines.push("---");

@@ -41,6 +41,7 @@ interface ParsedArgs {
   command: "init" | "build" | "query" | "skeleton" | "deps" | "impact" | "check" | "install-hook" | "help";
   path: string;
   query?: string;
+  budget?: number;
   include: string[];
   exclude: string[];
   semantic: boolean;
@@ -64,6 +65,7 @@ OPTIONS
   --semantic          Use semantic search (requires model download on first use)
   --include <glob>    Include only matching files (repeatable)
   --exclude <glob>    Exclude matching files (repeatable)
+  --budget <tokens>   Cap output to approximate token count (progressive degradation)
   -h, --help          Show this help
 
 EXAMPLES
@@ -71,6 +73,7 @@ EXAMPLES
   codemap query "where is memory stored?"     # find memory-related code
   codemap query "how does tool registration work?"
   codemap query "PostgreSQL storage adapter"
+  codemap query --budget 5000 "auth flow"     # cap output to ~5000 tokens
   codemap --check                             # CI freshness check
 
 SETUP (one-time)
@@ -162,14 +165,45 @@ function parseArgs(args: string[]): ParsedArgs | null {
   // Check for query command
   if (args[0] === "query") {
     const semantic = args.includes("--semantic");
-    const filtered = args.slice(1).filter((a) => a !== "--semantic");
-    if (filtered.length < 1) {
+
+    // Parse query args: query [--budget N] [--semantic] [--include G] [--exclude G] "question" [path]
+    let query: string | undefined;
+    let path = ".";
+    let budget: number | undefined;
+    const include: string[] = [];
+    const exclude: string[] = [];
+
+    let i = 1;
+    while (i < args.length) {
+      const arg = args[i]!;
+      if (arg === "--semantic") {
+        // already handled above
+      } else if (arg === "--budget" && i + 1 < args.length) {
+        budget = parseInt(args[++i]!, 10);
+        if (isNaN(budget) || budget <= 0) {
+          console.error("Error: --budget requires a positive number");
+          return null;
+        }
+      } else if (arg === "--include" && i + 1 < args.length) {
+        include.push(args[++i]!);
+      } else if (arg === "--exclude" && i + 1 < args.length) {
+        exclude.push(args[++i]!);
+      } else if (!arg.startsWith("-")) {
+        if (!query) {
+          query = arg;
+        } else {
+          path = arg;
+        }
+      }
+      i++;
+    }
+
+    if (!query) {
       console.error("Error: query requires a question string");
       return null;
     }
-    const query = filtered[0]!;
-    const path = filtered[1] ?? ".";
-    return { command: "query", path, query, include: [], exclude: [], semantic };
+
+    return { command: "query", path, query, budget, include, exclude, semantic };
   }
 
   // Default: build command with optional path and flags
@@ -300,6 +334,7 @@ async function installHook(rootPath: string): Promise<void> {
 const CODEMAP_INSTRUCTION = `## Before exploring code
 Run \`npx @yuzu-team/codemap query "your question"\` before grepping the codebase.
 Returns ranked relevant files with exports, classes, methods, and dependencies (~200 lines).
+Then use Grep/Read to drill into the files codemap identified — never use the Explore agent or broad searches as a first step.
 `;
 
 /**
@@ -449,7 +484,7 @@ async function main(): Promise<void> {
       }
 
       const queryTerms = tokenize(parsed.query!);
-      const output = renderRankedResults(ranked, graph.root, queryTerms);
+      const output = renderRankedResults(ranked, graph.root, queryTerms, 10, 200, parsed.budget);
       // Query results go to stdout (for piping/reading by agents)
       // Build status goes to stderr (already handled by ensureGraph)
       console.log(output);
