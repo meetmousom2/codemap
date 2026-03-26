@@ -31,9 +31,42 @@ function expandNames(names: string[]): string {
   return names.map(expandName).join(" ");
 }
 
+/** Patterns that indicate test, example, or benchmark files. */
+const TEST_EXAMPLE_PATTERNS = [
+  /\/(e2e|tests?|__tests__|__mocks__|spec|bench|benchmarks?|fixtures?|mocks?)\//,
+  /\.(spec|test|e2e)\.(ts|tsx|js|jsx)$/,
+];
+
+/** Patterns that indicate example/demo files — penalized less harshly than tests. */
+const EXAMPLE_PATTERNS = [
+  /\/examples?\//,
+];
+
+/** Check if a file path looks like a test, example, or benchmark. */
+function isTestOrExample(filePath: string): boolean {
+  return TEST_EXAMPLE_PATTERNS.some((p) => p.test(filePath));
+}
+
+/**
+ * Compute a directory-name relevance bonus.
+ * For each query token that appears as a directory segment in the file path,
+ * multiply the bonus by 1.5.
+ */
+function directoryBonus(filePath: string, queryTerms: string[]): number {
+  const dirSegments = filePath.toLowerCase().split("/").slice(0, -1); // exclude filename
+  let bonus = 1.0;
+  for (const term of queryTerms) {
+    if (dirSegments.some((seg) => seg === term || seg.includes(term))) {
+      bonus *= 2.0;
+    }
+  }
+  return bonus;
+}
+
 /**
  * Rank files by relevance to a query string.
- * Combines BM25 (via FTS5) with graph importance (PageRank).
+ * Combines BM25 (via FTS5) with graph importance (PageRank),
+ * directory-name bonus, and test/example penalty.
  */
 export function rankFiles(graph: CodeGraph, query: string): RankedFile[] {
   const queryTerms = tokenize(query);
@@ -71,6 +104,21 @@ export function rankFiles(graph: CodeGraph, query: string): RankedFile[] {
 
       // BM25 is primary signal, PageRank is secondary (importance boost)
       score = bm25Score * (1 + prScore * 10);
+
+      // Penalize test/benchmark files heavily — agents rarely need these first
+      const isTest = isTestOrExample(file.path);
+      const isExample = !isTest && EXAMPLE_PATTERNS.some((p) => p.test(file.path));
+
+      if (isTest) {
+        score *= 0.2;
+      } else if (isExample) {
+        score *= 0.4;
+      } else {
+        // Boost source files whose directory path matches query terms
+        // Only for non-test/non-example files to avoid boosting noise
+        score *= directoryBonus(file.path, queryTerms);
+      }
+
       matchedTerms = bm25Result.matchedTerms;
     } else {
       score = prScore * 0.01; // tiny baseline for important files with no BM25 match
@@ -195,7 +243,7 @@ function scoreBM25(
     const ftsQuery = queryTerms.join(" OR ");
 
     const rows = db.query<{ rowid: number; rank: number }, [string]>(`
-      SELECT rowid, bm25(files_fts, 1.0, 5.0, 5.0, 5.0, 3.0, 4.0, 2.0, 3.0) as rank
+      SELECT rowid, bm25(files_fts, 3.0, 5.0, 5.0, 5.0, 3.0, 4.0, 2.0, 3.0) as rank
       FROM files_fts
       WHERE files_fts MATCH ?
       ORDER BY rank

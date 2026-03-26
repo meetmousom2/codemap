@@ -29,6 +29,8 @@ const DEFAULT_SKIP_DIRS = new Set([
   "*.egg-info",
   // Codemap
   ".codemap",
+  // Claude Code
+  ".claude",
   // Git worktrees (avoid duplicate results)
   ".worktrees",
 ]);
