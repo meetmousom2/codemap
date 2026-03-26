@@ -1,10 +1,11 @@
 /**
  * Ranker — ranks files and symbols by relevance to a query.
- * Uses keyword matching + simplified PageRank on the dependency graph.
+ * Uses BM25 via bun:sqlite FTS5 + simplified PageRank on the dependency graph.
  */
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { Database } from "bun:sqlite";
 import type { CodeGraph, FileNode, Edge } from "./types";
 import { summarizeFile } from "./summarizer";
 
@@ -15,24 +16,66 @@ interface RankedFile {
 }
 
 /**
+ * Split a camelCase/PascalCase identifier into space-separated words for FTS indexing.
+ * "DatabaseConnection" -> "DatabaseConnection database connection"
+ * Includes the original so exact matches still work.
+ */
+function expandName(name: string): string {
+  const split = name.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2");
+  if (split === name) return name;
+  return `${name} ${split}`;
+}
+
+/** Expand a list of names, joining with spaces. */
+function expandNames(names: string[]): string {
+  return names.map(expandName).join(" ");
+}
+
+/**
  * Rank files by relevance to a query string.
- * Combines keyword matching (direct relevance) with graph importance (PageRank).
+ * Combines BM25 (via FTS5) with graph importance (PageRank).
  */
 export function rankFiles(graph: CodeGraph, query: string): RankedFile[] {
   const queryTerms = tokenize(query);
+  if (queryTerms.length === 0) return [];
+
   const pageRankScores = computePageRank(graph.edges, graph.files.map((f) => f.path));
+
+  // Build FTS5 index and score with BM25
+  const bm25Scores = scoreBM25(graph.files, queryTerms);
+
+  // Normalize BM25 scores to [0, 1] range so they combine well with PageRank
+  let maxBM25 = 0;
+  for (const entry of bm25Scores.values()) {
+    if (entry.score > maxBM25) maxBM25 = entry.score;
+  }
 
   const ranked: RankedFile[] = [];
 
   for (const file of graph.files) {
-    const { score: keywordScore, matchedTerms } = scoreKeywordMatch(file, queryTerms);
+    const bm25Result = bm25Scores.get(file.path);
     const prScore = pageRankScores.get(file.path) ?? 0;
 
-    // Keyword match is primary signal, PageRank is secondary (importance boost)
-    // Files with keyword matches get boosted by their graph importance
-    const score = keywordScore > 0
-      ? keywordScore * (1 + prScore * 10)
-      : prScore * 0.1; // small baseline for important files with no keyword match
+    let score: number;
+    let matchedTerms: string[];
+
+    if (bm25Result && bm25Result.score > 0) {
+      // Normalize to [0, 1] range
+      let bm25Score = maxBM25 > 0 ? bm25Result.score / maxBM25 : 0;
+
+      // Penalize files with very many exports (types files) — they match too broadly
+      const exportCount = file.exports.length + file.types.length;
+      if (exportCount > 20) {
+        bm25Score *= 0.5;
+      }
+
+      // BM25 is primary signal, PageRank is secondary (importance boost)
+      score = bm25Score * (1 + prScore * 10);
+      matchedTerms = bm25Result.matchedTerms;
+    } else {
+      score = prScore * 0.01; // tiny baseline for important files with no BM25 match
+      matchedTerms = [];
+    }
 
     if (score > 0) {
       ranked.push({ file, score, matchedTerms });
@@ -69,70 +112,140 @@ export function tokenize(text: string): string[] {
 }
 
 /**
- * Score how well a file matches the query terms.
- * Checks: file path, export names, class names, function names, JSDoc, type names.
+ * Score files using BM25 via an in-memory SQLite FTS5 table.
+ * Builds a virtual table with weighted columns from file metadata,
+ * then queries it with the tokenized terms.
  */
-function scoreKeywordMatch(
-  file: FileNode,
+function scoreBM25(
+  files: FileNode[],
   queryTerms: string[],
-): { score: number; matchedTerms: string[] } {
-  const matchedTerms: string[] = [];
-  let score = 0;
+): Map<string, { score: number; matchedTerms: string[] }> {
+  const results = new Map<string, { score: number; matchedTerms: string[] }>();
+  if (files.length === 0 || queryTerms.length === 0) return results;
 
-  // Build searchable text from the file's metadata
-  const searchableFields: { text: string; weight: number }[] = [
-    // File path (low weight — broad match)
-    { text: file.path.toLowerCase(), weight: 1 },
-    // Export names (high weight — these are the key identifiers)
-    ...file.exports.map((e) => ({ text: e.name.toLowerCase(), weight: 5 })),
-    // Class names (high weight)
-    ...file.classes.map((c) => ({ text: c.name.toLowerCase(), weight: 5 })),
-    // Method names (medium weight)
-    ...file.classes.flatMap((c) =>
-      c.methods.map((m) => ({ text: m.name.toLowerCase(), weight: 3 })),
-    ),
-    // Function names (high weight)
-    ...file.functions.map((f) => ({ text: f.name.toLowerCase(), weight: 5 })),
-    // Type/interface names (medium weight)
-    ...file.types.map((t) => ({ text: t.name.toLowerCase(), weight: 4 })),
-    // JSDoc (low weight — contextual match)
-    ...file.exports
-      .filter((e) => e.jsdoc)
-      .map((e) => ({ text: e.jsdoc!.toLowerCase(), weight: 2 })),
-    ...file.classes
-      .filter((c) => c.jsdoc)
-      .map((c) => ({ text: c.jsdoc!.toLowerCase(), weight: 2 })),
-    ...file.functions
-      .filter((f) => f.jsdoc)
-      .map((f) => ({ text: f.jsdoc!.toLowerCase(), weight: 2 })),
-    // Extends/implements (medium weight — relationship queries)
-    ...file.classes
-      .filter((c) => c.extends)
-      .map((c) => ({ text: c.extends!.toLowerCase(), weight: 3 })),
-    ...file.classes.flatMap((c) =>
-      c.implements.map((i) => ({ text: i.toLowerCase(), weight: 3 })),
-    ),
-  ];
+  const db = new Database(":memory:");
 
-  for (const term of queryTerms) {
-    let termMatched = false;
-    for (const field of searchableFields) {
-      if (field.text.includes(term)) {
-        score += field.weight;
-        termMatched = true;
-        break; // Don't double-count same term in multiple fields
+  try {
+    // Create FTS5 virtual table.
+    // Columns: file_path(1), export_names(5), class_names(5), function_names(5),
+    //          method_names(3), type_names(4), jsdoc(2), extends_implements(3)
+    db.run(`
+      CREATE VIRTUAL TABLE files_fts USING fts5(
+        file_path,
+        export_names,
+        class_names,
+        function_names,
+        method_names,
+        type_names,
+        jsdoc,
+        extends_implements,
+        tokenize='unicode61'
+      )
+    `);
+
+    const insertStmt = db.prepare(`
+      INSERT INTO files_fts(file_path, export_names, class_names, function_names, method_names, type_names, jsdoc, extends_implements)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    // Populate the FTS5 table with camelCase-expanded names
+    const insertMany = db.transaction(() => {
+      for (const file of files) {
+        const exportNames = expandNames(file.exports.map((e) => e.name));
+        const classNames = expandNames(file.classes.map((c) => c.name));
+        const functionNames = expandNames(file.functions.map((f) => f.name));
+        const methodNames = expandNames(
+          file.classes.flatMap((c) => c.methods.map((m) => m.name)),
+        );
+        const typeNames = expandNames(file.types.map((t) => t.name));
+
+        const jsdocParts: string[] = [];
+        for (const e of file.exports) if (e.jsdoc) jsdocParts.push(e.jsdoc);
+        for (const c of file.classes) if (c.jsdoc) jsdocParts.push(c.jsdoc);
+        for (const f of file.functions) if (f.jsdoc) jsdocParts.push(f.jsdoc);
+        const jsdoc = jsdocParts.join(" ");
+
+        const extendsParts: string[] = [];
+        for (const c of file.classes) {
+          if (c.extends) extendsParts.push(c.extends);
+          for (const impl of c.implements) extendsParts.push(impl);
+        }
+        const extendsImplements = expandNames(extendsParts);
+
+        // File path: expand directory and filename parts
+        const pathParts = file.path.replace(/[/\\._-]/g, " ");
+
+        insertStmt.run(
+          pathParts,
+          exportNames,
+          classNames,
+          functionNames,
+          methodNames,
+          typeNames,
+          jsdoc,
+          extendsImplements,
+        );
       }
+    });
+
+    insertMany();
+
+    // Query FTS5 with BM25 ranking
+    // bm25() returns negative scores (more negative = better), with per-column weights
+    const ftsQuery = queryTerms.join(" OR ");
+
+    const rows = db.query<{ rowid: number; rank: number }, [string]>(`
+      SELECT rowid, bm25(files_fts, 1.0, 5.0, 5.0, 5.0, 3.0, 4.0, 2.0, 3.0) as rank
+      FROM files_fts
+      WHERE files_fts MATCH ?
+      ORDER BY rank
+    `).all(ftsQuery);
+
+    // Map rowid back to file (rowids are 1-based, matching insertion order)
+    for (const row of rows) {
+      const fileIdx = row.rowid - 1;
+      if (fileIdx < 0 || fileIdx >= files.length) continue;
+      const file = files[fileIdx]!;
+
+      // BM25 returns negative scores; negate to get positive
+      const score = -row.rank;
+
+      // Determine matched terms by checking which terms appear in the file's indexed content
+      const matchedTerms: string[] = [];
+      const indexedText = buildIndexedText(file).toLowerCase();
+      for (const term of queryTerms) {
+        if (indexedText.includes(term)) {
+          matchedTerms.push(term);
+        }
+      }
+
+      results.set(file.path, { score, matchedTerms });
     }
-    if (termMatched && !matchedTerms.includes(term)) matchedTerms.push(term);
+  } finally {
+    db.close();
   }
 
-  // Penalize files with very many exports (types files) — they match too broadly
-  const exportCount = file.exports.length + file.types.length;
-  if (exportCount > 20) {
-    score *= 0.5;
-  }
+  return results;
+}
 
-  return { score, matchedTerms };
+/** Build a single string of all indexed content for a file (for matched-term detection). */
+function buildIndexedText(file: FileNode): string {
+  const parts: string[] = [file.path];
+  for (const e of file.exports) parts.push(expandName(e.name));
+  for (const c of file.classes) {
+    parts.push(expandName(c.name));
+    if (c.extends) parts.push(expandName(c.extends));
+    for (const impl of c.implements) parts.push(expandName(impl));
+    for (const m of c.methods) parts.push(expandName(m.name));
+    if (c.jsdoc) parts.push(c.jsdoc);
+  }
+  for (const f of file.functions) {
+    parts.push(expandName(f.name));
+    if (f.jsdoc) parts.push(f.jsdoc);
+  }
+  for (const t of file.types) parts.push(expandName(t.name));
+  for (const e of file.exports) if (e.jsdoc) parts.push(e.jsdoc);
+  return parts.join(" ");
 }
 
 /**
@@ -148,7 +261,7 @@ function computePageRank(
   const n = allFiles.length;
   if (n === 0) return new Map();
 
-  // Build adjacency list (from → [to])
+  // Build adjacency list (from -> [to])
   const outgoing = new Map<string, Set<string>>();
   const incoming = new Map<string, Set<string>>();
 
@@ -242,57 +355,63 @@ function extractMatchingLines(
 }
 
 /**
- * Render ranked results as compact markdown for LLM consumption.
- * Includes file summary, key exports, matching body lines, and why it matched.
- *
- * @param rootPath - project root, needed to read source files for body line matching
- * @param queryTerms - tokenized query terms for body line extraction
+ * Estimate token count using a simple heuristic: 1 token ~ 4 characters.
  */
-export function renderRankedResults(
-  ranked: RankedFile[],
+export function estimateTokens(text: string): number {
+  if (text.length === 0) return 0;
+  return Math.ceil(text.length / 4);
+}
+
+/** Detail level for progressive degradation. */
+type DetailLevel = 1 | 2 | 3;
+
+/**
+ * Render a single ranked file at a given detail level.
+ *
+ * Level 3 (full): summary, exports (max 10), class details (max 8 methods), body lines, dependencies
+ * Level 2 (signatures): summary + export signatures only, no class methods, no body lines, no deps
+ * Level 1 (file list): file path + one-line summary only
+ */
+function renderFileAtLevel(
+  entry: RankedFile,
+  level: DetailLevel,
   rootPath?: string,
   queryTerms?: string[],
-  maxFiles: number = 10,
-  maxLines: number = 200,
 ): string {
+  const { file, matchedTerms } = entry;
+  const fileName = file.path;
+  const summary = summarizeFile(file);
+  const matchInfo = matchedTerms.length > 0 ? ` [matched: ${matchedTerms.join(", ")}]` : "";
+
+  if (level === 1) {
+    return `## ${fileName}${matchInfo}\n${summary}\n`;
+  }
+
   const lines: string[] = [];
-  let fileCount = 0;
+  lines.push(`## ${fileName}${matchInfo}`);
+  lines.push(`${summary}`);
+  lines.push("");
 
-  for (const { file, matchedTerms } of ranked) {
-    if (fileCount >= maxFiles || lines.length >= maxLines) break;
-
-    const fileName = file.path;
-    const summary = summarizeFile(file);
-    const matchInfo = matchedTerms.length > 0 ? ` [matched: ${matchedTerms.join(", ")}]` : "";
-
-    lines.push(`## ${fileName}${matchInfo}`);
-    lines.push(`${summary}`);
-    lines.push("");
-    // line count tracked by lines.length
-
-    // Show exports — cap at 10 per file, truncate long signatures
-    if (file.exports.length > 0) {
-      const exportsToShow = file.exports.slice(0, 10);
-      for (const exp of exportsToShow) {
-        let sig = exp.signature.replace(/\n\s*/g, " ");
-        if (sig.length > 120) sig = sig.slice(0, 117) + "...";
-        lines.push(`- \`${sig}\``);
-        if (exp.jsdoc) lines.push(`  ${exp.jsdoc.split("\n")[0]}`);
-        // tracked
-      }
-      if (file.exports.length > 10) {
-        lines.push(`- _... ${file.exports.length - 10} more exports_`);
-        // tracked
-      }
-      lines.push("");
-      // tracked
+  // Show exports — cap at 10 per file, truncate long signatures
+  if (file.exports.length > 0) {
+    const exportsToShow = file.exports.slice(0, 10);
+    for (const exp of exportsToShow) {
+      let sig = exp.signature.replace(/\n\s*/g, " ");
+      if (sig.length > 120) sig = sig.slice(0, 117) + "...";
+      lines.push(`- \`${sig}\``);
+      if (level === 3 && exp.jsdoc) lines.push(`  ${exp.jsdoc.split("\n")[0]}`);
     }
+    if (file.exports.length > 10) {
+      lines.push(`- _... ${file.exports.length - 10} more exports_`);
+    }
+    lines.push("");
+  }
 
+  if (level === 3) {
     // Show class details
     for (const cls of file.classes) {
       const ext = cls.extends ? ` extends ${cls.extends}` : "";
       lines.push(`**class ${cls.name}${ext}**`);
-      // tracked
 
       const methodsToShow = cls.methods.slice(0, 8);
       for (const method of methodsToShow) {
@@ -304,7 +423,6 @@ export function renderRankedResults(
         lines.push(`- _... ${cls.methods.length - 8} more methods_`);
       }
       lines.push("");
-      // tracked
     }
 
     // Show matching body lines from source (implementation details)
@@ -328,7 +446,152 @@ export function renderRankedResults(
       }))].sort();
       lines.push(`**Depends on:** ${dirs.slice(0, 8).join(", ")}${dirs.length > 8 ? ` +${dirs.length - 8}` : ""}`);
       lines.push("");
-      // tracked
+    }
+  }
+
+  lines.push("---");
+  lines.push("");
+  return lines.join("\n");
+}
+
+/**
+ * Render ranked results as compact markdown for LLM consumption.
+ * Includes file summary, key exports, matching body lines, and why it matched.
+ *
+ * When `budget` is specified, progressively degrades output detail to fit:
+ *   Level 3 (full) -> Level 2 (signatures) -> Level 1 (file list) -> reduce file count
+ * At each level, tries reducing maxFiles before dropping a detail level.
+ *
+ * @param rootPath - project root, needed to read source files for body line matching
+ * @param queryTerms - tokenized query terms for body line extraction
+ * @param budget - optional token budget; if omitted, uses maxLines cap (default behavior)
+ */
+export function renderRankedResults(
+  ranked: RankedFile[],
+  rootPath?: string,
+  queryTerms?: string[],
+  maxFiles: number = 10,
+  maxLines: number = 200,
+  budget?: number,
+): string {
+  if (ranked.length === 0) return "";
+
+  // Without budget, use the original line-cap behavior
+  if (budget === undefined) {
+    return renderWithLineCap(ranked, rootPath, queryTerms, maxFiles, maxLines);
+  }
+
+  // With budget: progressive degradation
+  const filesToRender = ranked.slice(0, maxFiles);
+  const levels: DetailLevel[] = [3, 2, 1];
+
+  for (const level of levels) {
+    // Try rendering at this level, reducing file count if needed
+    for (let count = filesToRender.length; count >= 1; count--) {
+      const output = renderAtLevel(filesToRender.slice(0, count), level, rootPath, queryTerms, ranked.length);
+      if (estimateTokens(output) <= budget) {
+        return output;
+      }
+    }
+  }
+
+  // Even 1 file at level 1 doesn't fit — return as much as possible
+  return renderAtLevel(filesToRender.slice(0, 1), 1, rootPath, queryTerms, ranked.length);
+}
+
+/** Render N files at a given detail level, with truncation note. */
+function renderAtLevel(
+  files: RankedFile[],
+  level: DetailLevel,
+  rootPath?: string,
+  queryTerms?: string[],
+  totalRanked: number = 0,
+): string {
+  const parts: string[] = [];
+  for (const entry of files) {
+    parts.push(renderFileAtLevel(entry, level, rootPath, queryTerms));
+  }
+  if (totalRanked > files.length) {
+    parts.push(`_${totalRanked - files.length} more files matched but were truncated._`);
+  }
+  return parts.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
+}
+
+/** Original line-cap rendering (no budget). Preserves backward-compatible behavior. */
+function renderWithLineCap(
+  ranked: RankedFile[],
+  rootPath?: string,
+  queryTerms?: string[],
+  maxFiles: number = 10,
+  maxLines: number = 200,
+): string {
+  const lines: string[] = [];
+  let fileCount = 0;
+
+  for (const { file, matchedTerms } of ranked) {
+    if (fileCount >= maxFiles || lines.length >= maxLines) break;
+
+    const fileName = file.path;
+    const summary = summarizeFile(file);
+    const matchInfo = matchedTerms.length > 0 ? ` [matched: ${matchedTerms.join(", ")}]` : "";
+
+    lines.push(`## ${fileName}${matchInfo}`);
+    lines.push(`${summary}`);
+    lines.push("");
+
+    // Show exports — cap at 10 per file, truncate long signatures
+    if (file.exports.length > 0) {
+      const exportsToShow = file.exports.slice(0, 10);
+      for (const exp of exportsToShow) {
+        let sig = exp.signature.replace(/\n\s*/g, " ");
+        if (sig.length > 120) sig = sig.slice(0, 117) + "...";
+        lines.push(`- \`${sig}\``);
+        if (exp.jsdoc) lines.push(`  ${exp.jsdoc.split("\n")[0]}`);
+      }
+      if (file.exports.length > 10) {
+        lines.push(`- _... ${file.exports.length - 10} more exports_`);
+      }
+      lines.push("");
+    }
+
+    // Show class details
+    for (const cls of file.classes) {
+      const ext = cls.extends ? ` extends ${cls.extends}` : "";
+      lines.push(`**class ${cls.name}${ext}**`);
+
+      const methodsToShow = cls.methods.slice(0, 8);
+      for (const method of methodsToShow) {
+        const async_ = method.isAsync ? "async " : "";
+        const params = method.params.map((p) => `${p.name}: ${p.type}`).join(", ");
+        lines.push(`- ${async_}${method.name}(${params}): ${method.returnType}`);
+      }
+      if (cls.methods.length > 8) {
+        lines.push(`- _... ${cls.methods.length - 8} more methods_`);
+      }
+      lines.push("");
+    }
+
+    // Show matching body lines from source (implementation details)
+    if (rootPath && queryTerms && queryTerms.length > 0) {
+      const bodyHits = extractMatchingLines(rootPath, file.path, queryTerms);
+      if (bodyHits.length > 0) {
+        lines.push("**Key lines:**");
+        for (const hit of bodyHits) {
+          lines.push(hit);
+        }
+        lines.push("");
+      }
+    }
+
+    // Show imports — compact, just unique module dirs
+    const internalImports = file.imports.filter((i) => i.resolvedPath);
+    if (internalImports.length > 0) {
+      const dirs = [...new Set(internalImports.map((i) => {
+        const parts = i.resolvedPath!.split("/");
+        return parts.slice(0, -1).join("/") || parts[0];
+      }))].sort();
+      lines.push(`**Depends on:** ${dirs.slice(0, 8).join(", ")}${dirs.length > 8 ? ` +${dirs.length - 8}` : ""}`);
+      lines.push("");
     }
 
     lines.push("---");
