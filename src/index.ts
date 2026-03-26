@@ -33,9 +33,10 @@ import type { CliOptions, CodeGraph } from "./types";
 import { buildCodeGraph } from "./graph";
 import { addSummaries } from "./summarizer";
 import { rankFiles, renderRankedResults, tokenize } from "./ranker";
+import { renderImpact } from "./impact";
 
 interface ParsedArgs {
-  command: "init" | "build" | "query" | "check" | "install-hook" | "help";
+  command: "init" | "build" | "query" | "impact" | "check" | "install-hook" | "help";
   path: string;
   query?: string;
   include: string[];
@@ -50,6 +51,7 @@ COMMANDS
   codemap init [path]               Same as above (explicit)
   codemap query "question" [path]   Query the graph — returns relevant files and symbols
   codemap build [path]              Build/update the cached graph only (no init setup)
+  codemap impact <symbol> [path]    Show blast radius: what files/functions use a symbol
   codemap --check [path]            Exit 0 if cache is fresh, 1 if stale
   codemap --install-hook [path]     Install git post-merge hook to auto-rebuild
 
@@ -116,6 +118,17 @@ function parseArgs(args: string[]): ParsedArgs | null {
     const remaining = args.filter((a) => a !== "--install-hook");
     const path = remaining.find((a) => !a.startsWith("-")) ?? ".";
     return { command: "install-hook", path, include: [], exclude: [] };
+  }
+
+  // impact command
+  if (args[0] === "impact") {
+    if (args.length < 2) {
+      console.error("Error: impact requires a symbol name");
+      return null;
+    }
+    const query = args[1]!;
+    const path = args[2] ?? ".";
+    return { command: "impact", path, query, include: [], exclude: [] };
   }
 
   // Check for query command
@@ -397,6 +410,18 @@ async function main(): Promise<void> {
       // Query results go to stdout (for piping/reading by agents)
       // Build status goes to stderr (already handled by ensureGraph)
       console.log(output);
+      return;
+    }
+
+    case "impact": {
+      const cachePath = join(rootPath, CACHE_DIR, CACHE_FILE);
+      if (!existsSync(cachePath)) {
+        console.error("Error: no cached graph found. Run `codemap` first to build the graph.");
+        process.exit(1);
+      }
+      const graphJson = await Bun.file(cachePath).text();
+      const graph = JSON.parse(graphJson) as CodeGraph;
+      console.log(renderImpact(graph, parsed.query!));
       return;
     }
   }
