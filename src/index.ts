@@ -33,6 +33,7 @@ import type { CliOptions, CodeGraph } from "./types";
 import { buildCodeGraph } from "./graph";
 import { addSummaries } from "./summarizer";
 import { rankFiles, renderRankedResults, tokenize } from "./ranker";
+import { semanticRank } from "./embeddings";
 
 interface ParsedArgs {
   command: "init" | "build" | "query" | "check" | "install-hook" | "help";
@@ -40,6 +41,7 @@ interface ParsedArgs {
   query?: string;
   include: string[];
   exclude: string[];
+  semantic: boolean;
 }
 
 function printUsage(): void {
@@ -54,6 +56,7 @@ COMMANDS
   codemap --install-hook [path]     Install git post-merge hook to auto-rebuild
 
 OPTIONS
+  --semantic          Use semantic search (requires model download on first use)
   --include <glob>    Include only matching files (repeatable)
   --exclude <glob>    Exclude matching files (repeatable)
   -h, --help          Show this help
@@ -85,52 +88,54 @@ AI AGENT INSTRUCTIONS
 
 function parseArgs(args: string[]): ParsedArgs | null {
   if (args.length === 0) {
-    return { command: "init", path: ".", include: [], exclude: [] };
+    return { command: "init", path: ".", include: [], exclude: [], semantic: false };
   }
 
   // init command
   if (args[0] === "init") {
     const path = args[1] ?? ".";
-    return { command: "init", path, include: [], exclude: [] };
+    return { command: "init", path, include: [], exclude: [], semantic: false };
   }
 
   if (args.includes("--help") || args.includes("-h")) {
-    return { command: "help", path: ".", include: [], exclude: [] };
+    return { command: "help", path: ".", include: [], exclude: [], semantic: false };
   }
 
   // build command (explicit)
   if (args[0] === "build") {
     const path = args[1] ?? ".";
-    return { command: "build", path, include: [], exclude: [] };
+    return { command: "build", path, include: [], exclude: [], semantic: false };
   }
 
   // Check for --check
   if (args.includes("--check")) {
     const remaining = args.filter((a) => a !== "--check");
     const path = remaining.find((a) => !a.startsWith("-")) ?? ".";
-    return { command: "check", path, include: [], exclude: [] };
+    return { command: "check", path, include: [], exclude: [], semantic: false };
   }
 
   // Check for --install-hook
   if (args.includes("--install-hook")) {
     const remaining = args.filter((a) => a !== "--install-hook");
     const path = remaining.find((a) => !a.startsWith("-")) ?? ".";
-    return { command: "install-hook", path, include: [], exclude: [] };
+    return { command: "install-hook", path, include: [], exclude: [], semantic: false };
   }
 
   // Check for query command
   if (args[0] === "query") {
-    if (args.length < 2) {
+    const semantic = args.includes("--semantic");
+    const filtered = args.slice(1).filter((a) => a !== "--semantic");
+    if (filtered.length < 1) {
       console.error("Error: query requires a question string");
       return null;
     }
-    const query = args[1]!;
-    const path = args[2] ?? ".";
-    return { command: "query", path, query, include: [], exclude: [] };
+    const query = filtered[0]!;
+    const path = filtered[1] ?? ".";
+    return { command: "query", path, query, include: [], exclude: [], semantic };
   }
 
   // Default: build command with optional path and flags
-  const result: ParsedArgs = { command: "build", path: ".", include: [], exclude: [] };
+  const result: ParsedArgs = { command: "build", path: ".", include: [], exclude: [], semantic: false };
 
   let i = 0;
   if (args[0] && !args[0].startsWith("-")) {
@@ -391,7 +396,20 @@ async function main(): Promise<void> {
         include: parsed.include,
         exclude: parsed.exclude,
       });
-      const ranked = rankFiles(graph, parsed.query!);
+
+      let ranked;
+      if (parsed.semantic) {
+        try {
+          ranked = await semanticRank(graph, parsed.query!);
+        } catch (err) {
+          console.error("codemap: semantic search failed, falling back to keyword search");
+          console.error(String(err));
+          ranked = rankFiles(graph, parsed.query!);
+        }
+      } else {
+        ranked = rankFiles(graph, parsed.query!);
+      }
+
       const queryTerms = tokenize(parsed.query!);
       const output = renderRankedResults(ranked, graph.root, queryTerms);
       // Query results go to stdout (for piping/reading by agents)
