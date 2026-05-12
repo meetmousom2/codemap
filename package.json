@@ -1,9 +1,26 @@
 {
-  "name": "@yuzu-team/codemap",
-  "version": "0.2.0",
+  "name": "@codemap/cli",
+  "version": "0.3.0",
   "module": "src/index.ts",
   "type": "module",
   "license": "MIT",
+  "homepage": "https://github.com/meetmousom2/codemap#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/meetmousom2/codemap.git"
+  },
+  "bugs": {
+    "url": "https://github.com/meetmousom2/codemap/issues"
+  },
+  "keywords": [
+    "codemap",
+    "ast",
+    "tree-sitter",
+    "code-graph",
+    "ai-agents",
+    "claude-code",
+    "codex"
+  ],
   "bin": {
     "codemap": "./src/index.ts"
   },

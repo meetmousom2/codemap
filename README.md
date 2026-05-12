@@ -9,11 +9,11 @@ AST-based codebase knowledge graph for AI agents. One command to set up, one com
 ## Install
 
 ```bash
-npx @yuzu-team/codemap
+npx @codemap/cli
 ```
 
 That's it. This one command:
-1. Parses your codebase (TypeScript + Python)
+1. Parses your codebase (TypeScript)
 2. Builds a knowledge graph (cached at `.codemap/graph.json`)
 3. Adds `.codemap/` to `.gitignore`
 4. Adds agent instructions to `CLAUDE.md` / `AGENTS.md`
@@ -54,9 +54,9 @@ MastraMemory class extends MastraBase — 15 methods
 
 ## How it works
 
-1. **Scan** — finds all `.ts`, `.tsx`, `.py` files (respects `.gitignore`)
+1. **Scan** — finds all `.ts`, `.tsx` files (respects `.gitignore`)
 2. **Parse** — extracts AST via tree-sitter: exports, classes, functions, types, imports, JSDoc
-3. **Resolve** — resolves imports to file paths (tsconfig aliases, Python packages)
+3. **Resolve** — resolves imports to file paths (tsconfig aliases)
 4. **Graph** — builds dependency edges, detects modules, computes cross-file call references
 5. **Rank** — on query, scores files by keyword matching + PageRank on the dependency graph
 6. **Return** — outputs ~200 lines of the most relevant files with signatures and relationships
@@ -75,11 +75,11 @@ Tested on 3 repos with 5 questions each. Measured tool calls (Grep/Read/Glob) ne
 
 ## Agent integration
 
-codemap works with any AI coding tool. After `npx @yuzu-team/codemap`, the agent instructions are automatically added to your repo's `CLAUDE.md` or `AGENTS.md`:
+codemap works with any AI coding tool. After `npx @codemap/cli`, the agent instructions are automatically added to your repo's `CLAUDE.md` or `AGENTS.md`:
 
 ```markdown
 ## Before exploring code
-Run `npx @yuzu-team/codemap query "your question"` before grepping the codebase.
+Run `npx @codemap/cli query "your question"` before grepping the codebase.
 Returns ranked relevant files with exports, classes, methods, and dependencies (~200 lines).
 ```
 
@@ -112,9 +112,8 @@ codemap --help                    Show help
 | Language | Status |
 |----------|--------|
 | TypeScript / TSX | Supported |
-| Python | Scanner support (parser coming) |
 
-Adding a new language = writing tree-sitter query patterns (~200 lines). The scanner, graph, ranker, and CLI are language-agnostic.
+Adding a new language = writing tree-sitter query patterns (~200 lines). The graph, ranker, and CLI are language-agnostic — extend the scanner and add patterns.
 
 ## Development
 
