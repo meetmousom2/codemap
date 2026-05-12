@@ -152,8 +152,9 @@ export function tokenize(text: string): string[] {
     .toLowerCase()
     // Split camelCase
     .replace(/([a-z])([A-Z])/g, "$1 $2")
-    // Split on non-alphanumeric
-    .split(/[\s_\-./?"'!]+/)
+    // Split on any non-letter/non-number character (Unicode-aware so we don't
+    // drop or corrupt non-ASCII identifiers like "café" or "用户服务").
+    .split(/[^\p{L}\p{N}]+/u)
     .filter((t) => t.length >= 2 && !STOP_WORDS.has(t));
 
   return [...new Set(terms)];

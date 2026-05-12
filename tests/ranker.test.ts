@@ -43,6 +43,38 @@ describe("tokenize", () => {
   test("splits on underscores and hyphens", () => {
     expect(tokenize("my_cool-function")).toEqual(["my", "cool", "function"]);
   });
+
+  test("splits on parens and colons in conventional commit prefixes", () => {
+    expect(tokenize("fix(editor): prevent duplicate lasso")).toEqual([
+      "fix",
+      "editor",
+      "prevent",
+      "duplicate",
+      "lasso",
+    ]);
+  });
+
+  test("splits on brackets, colons, and commas", () => {
+    expect(tokenize("foo[bar]:baz,qux")).toEqual(["foo", "bar", "baz", "qux"]);
+  });
+
+  test("filters single-character tokens from angle-bracket generics", () => {
+    expect(tokenize("type<T>")).toEqual(["type"]);
+  });
+
+  test("preserves Unicode letters in non-ASCII identifiers", () => {
+    // café should not be truncated to "caf" — the é must survive the splitter.
+    expect(tokenize("café")).toEqual(["café"]);
+  });
+
+  test("preserves CJK terms as a single token", () => {
+    // FTS5's unicode61 tokenizer indexes CJK runs, so we must not drop them here.
+    expect(tokenize("用户服务")).toEqual(["用户服务"]);
+  });
+
+  test("splits punctuation between Unicode tokens", () => {
+    expect(tokenize("café(latte):用户")).toEqual(["café", "latte", "用户"]);
+  });
 });
 
 describe("rankFiles", () => {
@@ -199,6 +231,17 @@ describe("rankFiles", () => {
 
     expect(results.length).toBeGreaterThan(0);
     expect(results[0]!.file.path).toBe("src/retry.ts");
+  });
+
+  test("does not throw on punctuation-heavy queries (FTS5 syntax safety)", () => {
+    const files = [
+      makeFile("src/editor.ts", {
+        exports: [{ name: "something", kind: "function", signature: "function something(): void", isDefault: false }],
+        functions: [{ name: "something", signature: "function something(): void", params: [], returnType: "void", isAsync: false, isGenerator: false, typeParameters: [] }],
+      }),
+    ];
+    const graph = makeGraph(files);
+    expect(() => rankFiles(graph, "fix(editor): something")).not.toThrow();
   });
 
   test("matches extends/implements", () => {
