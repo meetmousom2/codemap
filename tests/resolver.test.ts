@@ -183,6 +183,50 @@ describe("Python resolver", () => {
     resolveFileImports(file, PY_FIXTURE);
     expect(file.imports[0]!.resolvedPath).toBe("mypackage/utils.py");
   });
+
+  test("flips isExternal to false when an import resolves to a tree-internal file", async () => {
+    await initResolvers(PY_FIXTURE);
+    // Parser marks all absolute imports as external initially; resolver should
+    // flip the flag for in-tree modules.
+    const file = makeFileNode("main.py", "python", [
+      {
+        source: "mypackage.utils",
+        resolvedPath: null,
+        namedImports: ["helper"],
+        isExternal: true,
+      },
+      {
+        source: "asyncio",
+        resolvedPath: null,
+        namedImports: [],
+        namespaceImport: "asyncio",
+        isExternal: true,
+      },
+    ]);
+
+    resolveFileImports(file, PY_FIXTURE);
+    expect(file.imports[0]!.resolvedPath).toBe("mypackage/utils.py");
+    expect(file.imports[0]!.isExternal).toBe(false);
+    expect(file.imports[1]!.resolvedPath).toBeNull();
+    expect(file.imports[1]!.isExternal).toBe(true);
+  });
+
+  test("resolves absolute imports against src/ layout (pyproject.toml)", async () => {
+    const SRC_FIXTURE = resolve(import.meta.dir, "fixtures/python-src-layout");
+    await initResolvers(SRC_FIXTURE);
+    const file = makeFileNode("app.py", "python", [
+      {
+        source: "srcpkg.core",
+        resolvedPath: null,
+        namedImports: ["do_work"],
+        isExternal: true,
+      },
+    ]);
+
+    resolveFileImports(file, SRC_FIXTURE);
+    expect(file.imports[0]!.resolvedPath).toBe("src/srcpkg/core.py");
+    expect(file.imports[0]!.isExternal).toBe(false);
+  });
 });
 
 describe("Go resolver", () => {
