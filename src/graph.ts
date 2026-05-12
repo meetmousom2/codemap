@@ -10,6 +10,7 @@ import { scan } from "./scanner";
 import { parseFiles, registerPlugin, initParser } from "./parser";
 import { registerTypescript } from "./languages/typescript";
 import { registerPython } from "./languages/python";
+import { registerGo } from "./languages/go";
 
 /**
  * Group files into modules by directory.
@@ -146,6 +147,8 @@ export async function buildCodeGraph(
   registerPlugin(tsPlugin);
   const pyPlugin = await registerPython();
   registerPlugin(pyPlugin);
+  const goPlugin = await registerGo();
+  registerPlugin(goPlugin);
   await initResolvers(rootPath);
 
   // 2. Scan for source files
