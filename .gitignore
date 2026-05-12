@@ -39,3 +39,7 @@ CONTRACT.md
 .devd/
 CLAUDE.md
 AGENTS.md
+
+# Eval API cache (regeneratable via eval/scripts/refresh.sh)
+eval/cache/
+eval/logs/
