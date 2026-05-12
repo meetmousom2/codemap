@@ -36,7 +36,7 @@ const DEFAULT_SKIP_DIRS = new Set([
 ]);
 
 /** All supported file extensions (auto-detected from registered language plugins) */
-const SUPPORTED_EXTENSIONS = new Set([".ts", ".tsx", ".py"]);
+const SUPPORTED_EXTENSIONS = new Set([".ts", ".tsx", ".py", ".go"]);
 
 /** Files to skip by default — config/build files that add noise to the map */
 const DEFAULT_SKIP_FILES = new Set([

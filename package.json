@@ -32,6 +32,7 @@
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",
     "ignore": "^7.0.0",
+    "tree-sitter-go": "^0.25.0",
     "tree-sitter-python": "^0.25.0",
     "tree-sitter-typescript": "^0.23.2",
     "web-tree-sitter": "^0.26.7"
