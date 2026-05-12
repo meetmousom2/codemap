@@ -1,0 +1,7 @@
+.claude/
+.codemap/
+.worktrees/
+tests/
+scripts/
+bun.lock
+tsconfig.json
