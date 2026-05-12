@@ -122,7 +122,7 @@ export interface ReExport {
 }
 
 /** Supported languages */
-export type Language = "typescript" | "python";
+export type Language = "typescript" | "python" | "go";
 
 /** Language plugin interface — each language implements this */
 export interface LanguagePlugin {
