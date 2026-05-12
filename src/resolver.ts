@@ -166,6 +166,95 @@ export function createTypescriptResolver(): ImportResolver {
 // Python resolver
 // ============================================================
 
+/**
+ * Cached Python source roots for the current project. Source roots are
+ * directories from which absolute imports are resolved (analogous to entries
+ * on PYTHONPATH). Common candidates: project root, `src/`, packages directly
+ * containing `__init__.py`, and `packages` declared in pyproject.toml.
+ */
+let cachedPySourceRoots: string[] | null = null;
+let cachedPyRoot: string | null = null;
+
+/**
+ * Detect Python source roots by looking at common project layouts.
+ *
+ * Priority order (first hit wins per candidate):
+ *   1. `<root>/src` if it exists (standard "src layout").
+ *   2. The project root itself.
+ *   3. Sibling directories of `pyproject.toml`/`setup.py`/`setup.cfg` whose
+ *      name matches a Python package (contains `__init__.py`).
+ *
+ * Returns roots as absolute paths, ordered most-specific to least-specific.
+ */
+async function detectPythonSourceRoots(rootPath: string): Promise<string[]> {
+  const roots: string[] = [];
+  const absRoot = resolve(rootPath);
+
+  // 1. src/ layout
+  const srcDir = join(absRoot, "src");
+  if (existsSync(srcDir)) roots.push(srcDir);
+
+  // 2. project root
+  roots.push(absRoot);
+
+  // 3. Look for pyproject.toml packages declaration (best-effort, regex parse —
+  //    we don't ship a TOML parser). Falls back gracefully if not present.
+  const pyprojectPath = join(absRoot, "pyproject.toml");
+  if (existsSync(pyprojectPath)) {
+    try {
+      const content = await Bun.file(pyprojectPath).text();
+      // Match: packages = ["pkg1", "pkg2"] OR packages = [{include = "pkg"}, ...]
+      const simpleMatch = content.match(/^\s*packages\s*=\s*\[([\s\S]*?)\]/m);
+      if (simpleMatch) {
+        const inner = simpleMatch[1]!;
+        // Pull out quoted strings (handles both plain list and {include = "x"} form)
+        const stringMatches = inner.matchAll(/["']([^"']+)["']/g);
+        for (const m of stringMatches) {
+          const pkg = m[1]!;
+          // The string could be a package name ("foo"), a path ("src/foo"), or
+          // include directive value. Resolve relative to root.
+          const candidateDir = pkg.includes("/")
+            ? resolve(absRoot, pkg, "..") // parent of the package dir
+            : absRoot;
+          if (existsSync(candidateDir) && !roots.includes(candidateDir)) {
+            roots.push(candidateDir);
+          }
+        }
+      }
+      // poetry: tool.poetry.packages = [{include = "x", from = "src"}]
+      const poetryMatches = content.matchAll(
+        /\{\s*include\s*=\s*["']([^"']+)["'](?:\s*,\s*from\s*=\s*["']([^"']+)["'])?/g,
+      );
+      for (const m of poetryMatches) {
+        const from = m[2];
+        if (from) {
+          const dir = resolve(absRoot, from);
+          if (existsSync(dir) && !roots.includes(dir)) roots.push(dir);
+        }
+      }
+    } catch {
+      // Ignore malformed pyproject.toml
+    }
+  }
+
+  return roots;
+}
+
+/** Lazy-load the source root cache. */
+async function getPythonSourceRoots(rootPath: string): Promise<string[]> {
+  if (cachedPyRoot === rootPath && cachedPySourceRoots) return cachedPySourceRoots;
+  cachedPySourceRoots = await detectPythonSourceRoots(rootPath);
+  cachedPyRoot = rootPath;
+  return cachedPySourceRoots;
+}
+
+/** Synchronous accessor (used inside resolveImport which is sync). */
+function pythonSourceRootsSync(rootPath: string): string[] {
+  if (cachedPyRoot === rootPath && cachedPySourceRoots) return cachedPySourceRoots;
+  // Fallback if initResolvers was not called: just the project root.
+  return [resolve(rootPath)];
+}
+
 /** Python import resolver */
 export function createPythonResolver(): ImportResolver {
   return {
@@ -176,7 +265,7 @@ export function createPythonResolver(): ImportResolver {
         const dots = importSource.match(/^\.+/)?.[0].length ?? 0;
         const fromDir = dirname(resolve(rootPath, fromFile));
 
-        // Go up 'dots - 1' directories (one dot = current package)
+        // One dot = current package; each additional dot = one level up.
         let targetDir = fromDir;
         for (let i = 1; i < dots; i++) {
           targetDir = dirname(targetDir);
@@ -188,29 +277,45 @@ export function createPythonResolver(): ImportResolver {
           return resolvePythonModule(join(targetDir, modulePath), rootPath);
         }
 
-        // from . import x — resolve to __init__.py in current dir
+        // `from . import x` — bare name resolves to the package's __init__.py.
         const initPath = join(targetDir, "__init__.py");
         if (existsSync(initPath)) return relative(rootPath, initPath);
+        // PEP 420 namespace package: directory with no __init__.py — return null
+        // since we have no concrete file to point at.
         return null;
       }
 
-      // Absolute import — try from project root
+      // Absolute import — try each source root in turn.
       const modulePath = importSource.replace(/\./g, "/");
-      return resolvePythonModule(join(rootPath, modulePath), rootPath);
+      const sourceRoots = pythonSourceRootsSync(rootPath);
+      for (const root of sourceRoots) {
+        const resolved = resolvePythonModule(join(root, modulePath), rootPath);
+        if (resolved) return resolved;
+      }
+      return null;
     },
   };
 }
 
-/** Try to resolve a Python module path */
+/**
+ * Try to resolve a Python module path. Order:
+ *   1. `<basePath>.py` — module file.
+ *   2. `<basePath>/__init__.py` — regular package.
+ *   3. `<basePath>/` directory existing (PEP 420 namespace package) — returns
+ *      null because there is no canonical file, but signals the package exists.
+ *      Resolver consumers should not treat this as a hit; we return null to be
+ *      explicit. Best-effort: namespace packages aren't represented as edges.
+ */
 function resolvePythonModule(basePath: string, rootPath: string): string | null {
-  // Try as a .py file
   const pyFile = basePath + ".py";
   if (existsSync(pyFile)) return relative(rootPath, pyFile);
 
-  // Try as a package (directory with __init__.py)
   const initFile = join(basePath, "__init__.py");
   if (existsSync(initFile)) return relative(rootPath, initFile);
 
+  // PEP 420 namespace package — directory exists but no __init__.py.
+  // We treat this as unresolved (returns null) because the codemap graph is
+  // file-oriented and there is no concrete file to attach edges to.
   return null;
 }
 
@@ -219,10 +324,12 @@ function resolvePythonModule(basePath: string, rootPath: string): string | null 
 // ============================================================
 
 /**
- * Initialize resolvers for a project. Loads tsconfig.json etc.
+ * Initialize resolvers for a project. Loads tsconfig.json and detects Python
+ * source roots from `pyproject.toml`, `src/` layout, etc.
  */
 export async function initResolvers(rootPath: string): Promise<void> {
   await loadTsConfig(rootPath);
+  await getPythonSourceRoots(rootPath);
 
   registerResolver(createTypescriptResolver());
   registerResolver(createPythonResolver());
@@ -241,8 +348,11 @@ export function resolveFileImports(
 
   for (const imp of fileNode.imports) {
     if (imp.isExternal) {
-      // Still try path aliases for TypeScript
-      if (fileNode.language === "typescript") {
+      // Try resolution for both languages — in TS, this picks up tsconfig path
+      // aliases; in Python, the parser marks absolute imports as external
+      // because it doesn't know about source roots yet, and the resolver flips
+      // the flag if the module is in-tree.
+      if (fileNode.language === "typescript" || fileNode.language === "python") {
         const resolved = resolver.resolveImport(imp.source, fileNode.path, rootPath);
         if (resolved) {
           imp.resolvedPath = resolved;
@@ -302,5 +412,7 @@ export function buildEdges(files: FileNode[]): Edge[] {
 export function resetResolverCache(): void {
   cachedTsConfig = null;
   cachedTsConfigRoot = null;
+  cachedPySourceRoots = null;
+  cachedPyRoot = null;
   resolvers.clear();
 }

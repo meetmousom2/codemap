@@ -112,14 +112,25 @@ codemap --help                    Show help
 | Language | Status |
 |----------|--------|
 | TypeScript / TSX | Supported |
+| Python | Supported |
 
-Adding a new language = writing tree-sitter query patterns (~200 lines). The graph, ranker, and CLI are language-agnostic — extend the scanner and add patterns.
+Python coverage: classes (with methods, properties, decorators), functions
+(including async, variadics, default args), PEP 695 `type` aliases,
+docstrings (PEP 257), `__all__` filtering, and PEP 8 visibility conventions.
+The import resolver handles `__init__.py` package roots, relative imports
+(`from .x import y`, `from ..pkg import z`), and absolute imports against
+detected source roots (`pyproject.toml`, `src/` layout, Poetry `packages`
+declarations). PEP 420 namespace packages are best-effort — files inside one
+are still indexed, but imports of a namespace package itself don't produce
+an edge (no canonical file to attach it to).
+
+Adding a new language = writing tree-sitter query patterns (~500 lines). The graph, ranker, and CLI are language-agnostic — extend the scanner and add patterns.
 
 ## Development
 
 ```bash
 bun install
-bun test          # 61 tests
+bun test          # 152 tests
 bun run src/index.ts query "test question" .
 ```
 
