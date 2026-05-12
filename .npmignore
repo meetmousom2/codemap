@@ -1,7 +1,13 @@
 .claude/
 .codemap/
+.devd/
+.github/
 .worktrees/
 tests/
 scripts/
 bun.lock
 tsconfig.json
+CLAUDE.md
+AGENTS.md
+.gitignore
+.npmignore
