@@ -10,12 +10,22 @@ delivers the data.
 ```
 eval/
 ├── README.md
+├── types.ts          # shared `Retriever` interface + `GroundTruthPR` shape
 ├── scripts/
 │   ├── mine-prs.ts   # mine one repo → eval/data/<owner__repo>.jsonl
 │   └── refresh.sh    # wipe cache + re-pull all five repos
 ├── data/             # committed JSONL ground truth (one row per PR)
 └── cache/            # local API response cache (gitignored, safe to delete)
 ```
+
+## Shared adapter interface
+
+`eval/types.ts` exports the `Retriever` interface that every comparative
+adapter (codemap, GitNexus, Aider repomap, embedding-based, grep) must
+implement. Issue #214 builds the adapters against this contract; the
+harness scoring layer in subsequent issues will import these types too.
+The `GroundTruthPR` interface in the same file matches the JSONL shape
+emitted by `mine-prs.ts`.
 
 Each row in a `data/*.jsonl` file is a self-contained JSON object:
 
