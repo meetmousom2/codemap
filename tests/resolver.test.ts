@@ -10,6 +10,8 @@ import { resolve } from "node:path";
 
 const TS_FIXTURE = resolve(import.meta.dir, "fixtures/sample-project");
 const PY_FIXTURE = resolve(import.meta.dir, "fixtures/python-project");
+const GO_FIXTURE = resolve(import.meta.dir, "fixtures/go-project");
+const GO_OTHER_FIXTURE = resolve(import.meta.dir, "fixtures/go-other-module");
 
 beforeEach(() => {
   resetResolverCache();
@@ -17,7 +19,7 @@ beforeEach(() => {
 
 function makeFileNode(
   path: string,
-  language: "typescript" | "python",
+  language: "typescript" | "python" | "go",
   imports: FileNode["imports"] = [],
   reExports: FileNode["reExports"] = [],
 ): FileNode {
@@ -180,6 +182,86 @@ describe("Python resolver", () => {
 
     resolveFileImports(file, PY_FIXTURE);
     expect(file.imports[0]!.resolvedPath).toBe("mypackage/utils.py");
+  });
+});
+
+describe("Go resolver", () => {
+  test("resolves module-local imports via go.mod", async () => {
+    await initResolvers(GO_FIXTURE);
+    const file = makeFileNode("main.go", "go", [
+      {
+        source: "example.com/myrepo/cmd",
+        resolvedPath: null,
+        namedImports: [],
+        isExternal: false,
+      },
+    ]);
+
+    resolveFileImports(file, GO_FIXTURE);
+    expect(file.imports[0]!.resolvedPath).toBe("cmd/tool.go");
+  });
+
+  test("resolves internal/ packages from inside the module", async () => {
+    await initResolvers(GO_FIXTURE);
+    const file = makeFileNode("main.go", "go", [
+      {
+        source: "example.com/myrepo/internal/secret",
+        resolvedPath: null,
+        namedImports: [],
+        isExternal: false,
+      },
+    ]);
+
+    resolveFileImports(file, GO_FIXTURE);
+    expect(file.imports[0]!.resolvedPath).toBe("internal/secret/secret.go");
+  });
+
+  test("blocks internal/ imports from outside the parent package", async () => {
+    await initResolvers(GO_OTHER_FIXTURE);
+    const file = makeFileNode("other/other.go", "go", [
+      {
+        source: "example.com/myrepo/internal/secret",
+        resolvedPath: null,
+        namedImports: [],
+        isExternal: false,
+      },
+    ]);
+
+    resolveFileImports(file, GO_OTHER_FIXTURE);
+    expect(file.imports[0]!.resolvedPath).toBeNull();
+  });
+
+  test("resolves vendored packages via vendor/", async () => {
+    await initResolvers(GO_FIXTURE);
+    const file = makeFileNode("main.go", "go", [
+      {
+        source: "github.com/external/pkg",
+        resolvedPath: null,
+        namedImports: [],
+        isExternal: false,
+      },
+    ]);
+
+    resolveFileImports(file, GO_FIXTURE);
+    expect(file.imports[0]!.resolvedPath).toBe(
+      "vendor/github.com/external/pkg/pkg.go",
+    );
+  });
+
+  test("leaves stdlib imports unresolved", async () => {
+    await initResolvers(GO_FIXTURE);
+    const file = makeFileNode("main.go", "go", [
+      {
+        source: "fmt",
+        resolvedPath: null,
+        namedImports: [],
+        isExternal: true,
+      },
+    ]);
+
+    resolveFileImports(file, GO_FIXTURE);
+    expect(file.imports[0]!.resolvedPath).toBeNull();
+    expect(file.imports[0]!.isExternal).toBe(true);
   });
 });
 

@@ -13,7 +13,7 @@ npx @codemap-cli/codemap
 ```
 
 That's it. This one command:
-1. Parses your codebase (TypeScript)
+1. Parses your codebase (TypeScript, Go)
 2. Builds a knowledge graph (cached at `.codemap/graph.json`)
 3. Adds `.codemap/` to `.gitignore`
 4. Adds agent instructions to `CLAUDE.md` / `AGENTS.md`
@@ -54,7 +54,7 @@ MastraMemory class extends MastraBase — 15 methods
 
 ## How it works
 
-1. **Scan** — finds all `.ts`, `.tsx` files (respects `.gitignore`)
+1. **Scan** — finds all `.ts`, `.tsx`, `.go` files (respects `.gitignore`)
 2. **Parse** — extracts AST via tree-sitter: exports, classes, functions, types, imports, JSDoc
 3. **Resolve** — resolves imports to file paths (tsconfig aliases)
 4. **Graph** — builds dependency edges, detects modules, computes cross-file call references
@@ -112,8 +112,14 @@ codemap --help                    Show help
 | Language | Status |
 |----------|--------|
 | TypeScript / TSX | Supported |
+| Python | Scanner (parser in progress) |
+| Go | Supported |
 
 Adding a new language = writing tree-sitter query patterns (~200 lines). The graph, ranker, and CLI are language-agnostic — extend the scanner and add patterns.
+
+### Go notes
+
+Go support parses package clauses, top-level functions, methods (attached to their receiver struct), struct fields, interfaces, type aliases, imports and doc comments. The import resolver reads `go.mod` to map the module path prefix onto local files, honors Go's `internal/` visibility rules, and falls back to `vendor/` for vendored dependencies. Call-graph resolution across interface method-sets is best-effort — dynamic dispatch through interface types is not fully resolved.
 
 ## Development
 

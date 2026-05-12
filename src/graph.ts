@@ -9,6 +9,7 @@ import { buildEdges, resolveFileImports, initResolvers } from "./resolver";
 import { scan } from "./scanner";
 import { parseFiles, registerPlugin, initParser } from "./parser";
 import { registerTypescript } from "./languages/typescript";
+import { registerGo } from "./languages/go";
 
 /**
  * Group files into modules by directory.
@@ -143,6 +144,8 @@ export async function buildCodeGraph(
   await initParser();
   const tsPlugin = await registerTypescript();
   registerPlugin(tsPlugin);
+  const goPlugin = await registerGo();
+  registerPlugin(goPlugin);
   await initResolvers(rootPath);
 
   // 2. Scan for source files
