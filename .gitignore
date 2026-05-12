@@ -34,3 +34,8 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .DS_Store
 .worktrees/
 CONTRACT.md
+
+# Local AI-agent state — not for the public repo
+.devd/
+CLAUDE.md
+AGENTS.md
