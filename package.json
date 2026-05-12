@@ -1,5 +1,5 @@
 {
-  "name": "@codemap/cli",
+  "name": "@codemap-cli/codemap",
   "version": "0.3.0",
   "module": "src/index.ts",
   "type": "module",
