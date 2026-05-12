@@ -7,7 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
-- Renamed package from `@yuzu-team/codemap` to `@codemap/cli`. Install with `npx @codemap/cli`.
+- Renamed package from `@yuzu-team/codemap` to `@codemap-cli/codemap`. Install with `npx @codemap-cli/codemap`.
+  - Note: the original target was the `@codemap` org (name `cli`), but npm refused the `@codemap` org ("creation denied, contact support"), so we chose `@codemap-cli/codemap` instead.
 
 ## [0.2.0] - 2026-04
 

@@ -75,12 +75,12 @@ EXAMPLES
   codemap --check                             # CI freshness check
 
 SETUP (one-time)
-  npx @codemap/cli                Builds graph, updates .gitignore, adds instructions
+  npx @codemap-cli/codemap                Builds graph, updates .gitignore, adds instructions
                                         to CLAUDE.md/AGENTS.md, installs post-merge hook.
                                         Run this once per repo. Everything is automatic.
 
 AI AGENT INSTRUCTIONS
-  If .codemap/ doesn't exist, run \`npx @codemap/cli\` first to set up.
+  If .codemap/ doesn't exist, run \`npx @codemap-cli/codemap\` first to set up.
   Then use \`codemap query "your question"\` before grepping the codebase.
   It returns a ranked list of the most relevant files with their exports,
   classes, methods, and dependencies — typically 10-15 files in ~200 lines.
@@ -308,7 +308,7 @@ async function installHook(rootPath: string): Promise<void> {
   }
 
   const hookPath = join(hookDir, "post-merge");
-  const hookCommand = '#!/bin/sh\nnpx @codemap/cli "$(git rev-parse --show-toplevel)"\n';
+  const hookCommand = '#!/bin/sh\nnpx @codemap-cli/codemap "$(git rev-parse --show-toplevel)"\n';
 
   if (existsSync(hookPath)) {
     const existing = await Bun.file(hookPath).text();
@@ -326,7 +326,7 @@ async function installHook(rootPath: string): Promise<void> {
 }
 
 const CODEMAP_INSTRUCTION = `## Before exploring code
-Run \`npx @codemap/cli query "your question"\` before grepping the codebase.
+Run \`npx @codemap-cli/codemap query "your question"\` before grepping the codebase.
 Returns ranked relevant files with exports, classes, methods, and dependencies (~200 lines).
 Then use Grep/Read to drill into the files codemap identified — never use the Explore agent or broad searches as a first step.
 `;

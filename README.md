@@ -9,7 +9,7 @@ AST-based codebase knowledge graph for AI agents. One command to set up, one com
 ## Install
 
 ```bash
-npx @codemap/cli
+npx @codemap-cli/codemap
 ```
 
 That's it. This one command:
@@ -75,11 +75,11 @@ Tested on 3 repos with 5 questions each. Measured tool calls (Grep/Read/Glob) ne
 
 ## Agent integration
 
-codemap works with any AI coding tool. After `npx @codemap/cli`, the agent instructions are automatically added to your repo's `CLAUDE.md` or `AGENTS.md`:
+codemap works with any AI coding tool. After `npx @codemap-cli/codemap`, the agent instructions are automatically added to your repo's `CLAUDE.md` or `AGENTS.md`:
 
 ```markdown
 ## Before exploring code
-Run `npx @codemap/cli query "your question"` before grepping the codebase.
+Run `npx @codemap-cli/codemap query "your question"` before grepping the codebase.
 Returns ranked relevant files with exports, classes, methods, and dependencies (~200 lines).
 ```
 
