@@ -1,0 +1,15 @@
+{"title": "where is the QueryClient class?", "files_changed": ["packages/query-core/src/queryClient.ts"]}
+{"title": "where is the useQuery hook?", "files_changed": ["packages/react-query/src/useQuery.ts", "packages/react-query/src/useBaseQuery.ts"]}
+{"title": "where is the useMutation hook?", "files_changed": ["packages/react-query/src/useMutation.ts"]}
+{"title": "where is the retry/retryer logic?", "files_changed": ["packages/query-core/src/retryer.ts"]}
+{"title": "where is the focus manager (window focus refetch)?", "files_changed": ["packages/query-core/src/focusManager.ts"]}
+{"title": "where is the online/offline manager?", "files_changed": ["packages/query-core/src/onlineManager.ts"]}
+{"title": "where is the query cache?", "files_changed": ["packages/query-core/src/queryCache.ts"]}
+{"title": "where is the mutation cache?", "files_changed": ["packages/query-core/src/mutationCache.ts"]}
+{"title": "where is hydration / dehydration?", "files_changed": ["packages/query-core/src/hydration.ts"]}
+{"title": "where is the infinite query observer?", "files_changed": ["packages/query-core/src/infiniteQueryObserver.ts", "packages/query-core/src/infiniteQueryBehavior.ts"]}
+{"title": "where is query persistence (persist client)?", "files_changed": ["packages/query-persist-client-core/src/persist.ts", "packages/query-persist-client-core/src/createPersister.ts"]}
+{"title": "where is the React Query devtools panel?", "files_changed": ["packages/react-query-devtools/src/ReactQueryDevtoolsPanel.tsx", "packages/react-query-devtools/src/ReactQueryDevtools.tsx"]}
+{"title": "where is the QueryClientProvider context?", "files_changed": ["packages/react-query/src/QueryClientProvider.tsx"]}
+{"title": "where is useInfiniteQuery?", "files_changed": ["packages/react-query/src/useInfiniteQuery.ts"]}
+{"title": "where is the subscribable base class?", "files_changed": ["packages/query-core/src/subscribable.ts"]}

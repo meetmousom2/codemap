@@ -65,13 +65,25 @@ The graph caches at `.codemap/graph.json` and auto-rebuilds when `HEAD` changes.
 
 ## Eval results
 
-Tested on 3 repos with 5 questions each. Measured tool calls (Grep/Read/Glob) needed to answer structural questions about the codebase.
+Benchmarked against ripgrep, Aider repomap, and dense embeddings (MiniLM-L6-v2) on **50 natural-language lookup queries** across 4 open-source repos (3 TypeScript + FastAPI/Python).
 
-| Repo | Files | Without codemap | With codemap | Reduction |
-|------|-------|----------------|--------------|-----------|
-| yuzu-ai | 202 | 15 calls | 4 calls | **73%** |
-| Mastra | 4,102 | 13 calls | 5 calls | **62%** |
-| Inngest JS | ~500 | 17 calls | 7 calls | **59%** |
+| Adapter | F1@5 | Recall | Hit rate | Tokens |
+|---------|------|--------|----------|--------|
+| **codemap** | **0.328** | **83%** | **45/50 (90%)** | 3,318 |
+| Embeddings (MiniLM) | 0.166 | 44% | 24/50 (48%) | 2,500 |
+| Aider repomap | 0.022 | 41% | 23/50 (46%) | 7,657 |
+| ripgrep | 0.055 | 13% | 8/50 (16%) | 7 |
+
+Per-repo, codemap leads on every test:
+
+| Repo | codemap F1 | embedding F1 | aider F1 | grep F1 |
+|------|-----------|--------------|----------|---------|
+| tanstack/query (TS) | **0.359** | 0.041 | 0.023 | 0.000 |
+| excalidraw/excalidraw (TS) | **0.319** | 0.190 | 0.004 | 0.029 |
+| tiangolo/fastapi (Python) | **0.319** | 0.257 | 0.037 | 0.067 |
+| inngest/inngest-js (TS) | **0.302** | 0.190 | 0.017 | 0.145 |
+
+Full methodology, eval harness, and per-query results: [`eval/results/2026-05-13-lookup.md`](eval/results/2026-05-13-lookup.md). Reproducible via `bash eval/scripts/setup-test-repos.sh && bun run eval/scripts/run-lookup.ts`.
 
 ## Agent integration
 
