@@ -1,0 +1,10 @@
+{"title": "where is the InngestFunction class defined?", "files_changed": ["packages/inngest/src/components/InngestFunction.ts"]}
+{"title": "where is the step execution logic?", "files_changed": ["packages/inngest/src/components/InngestStepTools.ts", "packages/inngest/src/components/execution/engine.ts", "packages/inngest/src/components/execution/InngestExecution.ts"]}
+{"title": "how does the Inngest dev server API work?", "files_changed": ["packages/inngest/src/api/api.ts", "packages/inngest/src/api/schema.ts"]}
+{"title": "where is the retry-after-error logic?", "files_changed": ["packages/inngest/src/components/RetryAfterError.ts"]}
+{"title": "where is the main Inngest client class?", "files_changed": ["packages/inngest/src/components/Inngest.ts"]}
+{"title": "where is the express integration handler?", "files_changed": ["packages/inngest/src/express.ts"]}
+{"title": "where is the realtime subscription channel logic?", "files_changed": ["packages/realtime/src/channel.ts", "packages/realtime/src/topic.ts"]}
+{"title": "where is encryption middleware implemented?", "files_changed": ["packages/middleware-encryption/src/middleware.ts", "packages/middleware-encryption/src/index.ts"]}
+{"title": "where is the InngestCommHandler that handles requests?", "files_changed": ["packages/inngest/src/components/InngestCommHandler.ts"]}
+{"title": "where is the non-retriable error class?", "files_changed": ["packages/inngest/src/components/NonRetriableError.ts"]}

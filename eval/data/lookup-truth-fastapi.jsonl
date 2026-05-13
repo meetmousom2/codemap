@@ -1,0 +1,15 @@
+{"title": "where is the FastAPI application class?", "files_changed": ["fastapi/applications.py"]}
+{"title": "where is the APIRouter for grouping routes?", "files_changed": ["fastapi/routing.py"]}
+{"title": "where is the OAuth2 password flow security?", "files_changed": ["fastapi/security/oauth2.py"]}
+{"title": "where is HTTP basic authentication implemented?", "files_changed": ["fastapi/security/http.py"]}
+{"title": "where is the API key security scheme?", "files_changed": ["fastapi/security/api_key.py"]}
+{"title": "where are exception handlers defined?", "files_changed": ["fastapi/exception_handlers.py", "fastapi/exceptions.py"]}
+{"title": "where is the CORS middleware?", "files_changed": ["fastapi/middleware/cors.py"]}
+{"title": "where is OpenAPI schema generation?", "files_changed": ["fastapi/openapi/utils.py", "fastapi/openapi/models.py"]}
+{"title": "where is the JSON response encoder?", "files_changed": ["fastapi/encoders.py"]}
+{"title": "where are Path, Query, Body and Form parameter classes?", "files_changed": ["fastapi/params.py", "fastapi/param_functions.py"]}
+{"title": "where is the test client?", "files_changed": ["fastapi/testclient.py"]}
+{"title": "where is WebSocket support?", "files_changed": ["fastapi/websockets.py"]}
+{"title": "where is the background tasks system?", "files_changed": ["fastapi/background.py"]}
+{"title": "where is static files serving?", "files_changed": ["fastapi/staticfiles.py"]}
+{"title": "where are dependency injection internals (solving deps)?", "files_changed": ["fastapi/dependencies/utils.py", "fastapi/dependencies/models.py"]}

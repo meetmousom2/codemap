@@ -1,0 +1,10 @@
+{"title": "where is the canvas rendering logic?", "files_changed": ["packages/excalidraw/renderer/staticScene.ts", "packages/excalidraw/renderer/interactiveScene.ts"]}
+{"title": "where is the eraser tool implemented?", "files_changed": ["packages/excalidraw/eraser/index.ts"]}
+{"title": "where is the lasso selection tool?", "files_changed": ["packages/excalidraw/lasso/index.ts", "packages/excalidraw/lasso/utils.ts"]}
+{"title": "where is text editing (wysiwyg) handled?", "files_changed": ["packages/excalidraw/wysiwyg/textWysiwyg.tsx"]}
+{"title": "where is the duplicate selection action?", "files_changed": ["packages/excalidraw/actions/actionDuplicateSelection.tsx"]}
+{"title": "where is scene zoom logic?", "files_changed": ["packages/excalidraw/scene/zoom.ts"]}
+{"title": "where is SVG export logic?", "files_changed": ["packages/excalidraw/scene/export.ts"]}
+{"title": "where are keyboard shortcuts defined?", "files_changed": ["packages/excalidraw/actions/shortcuts.ts"]}
+{"title": "where is the library system that stores element collections?", "files_changed": ["packages/excalidraw/data/library.ts"]}
+{"title": "where is the SVG-to-elements parser for clipboard paste?", "files_changed": ["packages/excalidraw/data/blob.ts", "packages/excalidraw/clipboard.ts"]}
