@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import type { CodeGraph, FileNode } from "./types";
+import { isTestPath, isExamplePath } from "./ranker";
 
 /** Re-exported for the ranker interface */
 interface RankedFile {
@@ -345,13 +346,6 @@ export async function semanticRank(
     graph.files.map((f) => f.path),
   );
 
-  // Patterns for test/example files — penalize so source code ranks higher
-  const testPatterns = [
-    /\/(e2e|tests?|__tests__|__mocks__|spec|bench|benchmarks?|fixtures?|mocks?)\//,
-    /\.(spec|test|e2e)\.(ts|tsx|js|jsx)$/,
-  ];
-  const examplePatterns = [/\/examples?\//];
-
   // Score and rank
   const ranked: RankedFile[] = [];
 
@@ -365,10 +359,12 @@ export async function semanticRank(
     // Combine: cosine similarity boosted by PageRank importance
     let score = cosSim * (1 + prScore * 10);
 
-    // Penalize test/example files — agents need source code first
-    if (testPatterns.some((p) => p.test(file.path))) {
+    // Penalize test/example files — agents need source code first.
+    // Shares classification with the BM25 ranker so top-level `tests/`,
+    // `test_foo.py`, and `docs_src/` paths are penalized here too.
+    if (isTestPath(file.path)) {
       score *= 0.2;
-    } else if (examplePatterns.some((p) => p.test(file.path))) {
+    } else if (isExamplePath(file.path)) {
       score *= 0.4;
     }
 
