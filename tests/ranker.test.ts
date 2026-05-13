@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { rankFiles, tokenize } from "../src/ranker";
+import { rankFiles, tokenize, isTestOrExample } from "../src/ranker";
 import type { CodeGraph, FileNode, Edge } from "../src/types";
 
 function makeFile(path: string, overrides: Partial<FileNode> = {}): FileNode {
@@ -74,6 +74,44 @@ describe("tokenize", () => {
 
   test("splits punctuation between Unicode tokens", () => {
     expect(tokenize("café(latte):用户")).toEqual(["café", "latte", "用户"]);
+  });
+});
+
+describe("isTestOrExample", () => {
+  test("matches top-level tests/ directory (Python pytest layout)", () => {
+    expect(isTestOrExample("tests/foo.py")).toBe(true);
+  });
+
+  test("matches top-level test_*.py pytest convention", () => {
+    expect(isTestOrExample("test_foo.py")).toBe(true);
+  });
+
+  test("matches nested tests/ directory (preserves existing behavior)", () => {
+    expect(isTestOrExample("packages/x/tests/foo.ts")).toBe(true);
+  });
+
+  test("matches top-level docs_src/ via EXAMPLE_PATTERNS", () => {
+    expect(isTestOrExample("docs_src/tutorial001.py")).toBe(true);
+  });
+
+  test("matches top-level docs/ via EXAMPLE_PATTERNS", () => {
+    expect(isTestOrExample("docs/api.md")).toBe(true);
+  });
+
+  test("matches top-level examples/ via EXAMPLE_PATTERNS", () => {
+    expect(isTestOrExample("examples/quickstart.py")).toBe(true);
+  });
+
+  test("matches *.spec.ts file convention", () => {
+    expect(isTestOrExample("src/foo.spec.ts")).toBe(true);
+  });
+
+  test("does not match ordinary source files", () => {
+    expect(isTestOrExample("src/userController.ts")).toBe(false);
+  });
+
+  test("does not match files that merely contain 'test' substring", () => {
+    expect(isTestOrExample("src/contestant.ts")).toBe(false);
   });
 });
 

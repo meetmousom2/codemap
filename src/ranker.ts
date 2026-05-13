@@ -31,20 +31,38 @@ function expandNames(names: string[]): string {
   return names.map(expandName).join(" ");
 }
 
-/** Patterns that indicate test, example, or benchmark files. */
+/**
+ * Patterns that indicate test, benchmark, or fixture files.
+ * Use `(^|\/)` so top-level `tests/foo.py` matches as well as nested `pkg/tests/foo.ts`.
+ */
 const TEST_EXAMPLE_PATTERNS = [
-  /\/(e2e|tests?|__tests__|__mocks__|spec|bench|benchmarks?|fixtures?|mocks?)\//,
+  /(^|\/)(e2e|tests?|__tests__|__mocks__|spec|bench|benchmarks?|fixtures?|mocks?)\//,
   /\.(spec|test|e2e)\.(ts|tsx|js|jsx)$/,
+  /(^|\/)test_[^/]+\.py$/,
 ];
 
 /** Patterns that indicate example/demo files — penalized less harshly than tests. */
 const EXAMPLE_PATTERNS = [
-  /\/examples?\//,
+  /(^|\/)examples?\//,
+  /(^|\/)docs?(_src)?\//,
+  /(^|\/)tutorials?\//,
+  /(^|\/)samples?\//,
+  /(^|\/)cookbook\//,
 ];
 
-/** Check if a file path looks like a test, example, or benchmark. */
-function isTestOrExample(filePath: string): boolean {
+/** Check if a file path looks like a test, benchmark, or fixture. */
+export function isTestPath(filePath: string): boolean {
   return TEST_EXAMPLE_PATTERNS.some((p) => p.test(filePath));
+}
+
+/** Check if a file path looks like an example/demo/docs file. */
+export function isExamplePath(filePath: string): boolean {
+  return EXAMPLE_PATTERNS.some((p) => p.test(filePath));
+}
+
+/** Check if a file path looks like a test, example, benchmark, or docs/demo file. */
+export function isTestOrExample(filePath: string): boolean {
+  return isTestPath(filePath) || isExamplePath(filePath);
 }
 
 /**
@@ -106,8 +124,8 @@ export function rankFiles(graph: CodeGraph, query: string): RankedFile[] {
       score = bm25Score * (1 + prScore * 10);
 
       // Penalize test/benchmark files heavily — agents rarely need these first
-      const isTest = isTestOrExample(file.path);
-      const isExample = !isTest && EXAMPLE_PATTERNS.some((p) => p.test(file.path));
+      const isTest = isTestPath(file.path);
+      const isExample = !isTest && isExamplePath(file.path);
 
       if (isTest) {
         score *= 0.2;
