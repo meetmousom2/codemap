@@ -183,11 +183,16 @@ function metrics(pred: string[], truth: string[]): { p: number; r: number; f1: n
   return { p, r, f1: p + r === 0 ? 0 : (2 * p * r) / (p + r) };
 }
 
+const aiderAvailable = Bun.which("aider") !== null;
+if (!aiderAvailable) {
+  console.warn("aider not found — omitting from comparison");
+}
+
 const adapters: { adapter: Retriever; topK: number | "all" }[] = [
   { adapter: codemap, topK: K },
   { adapter: grep, topK: K },
   { adapter: embedding, topK: K },
-  { adapter: aiderFull, topK: "all" },
+  ...(aiderAvailable ? [{ adapter: aiderFull, topK: "all" as const }] : []),
 ];
 
 const stats: Record<string, { p: number; r: number; f1: number; tok: number; hits: number; n: number }> =
@@ -226,7 +231,7 @@ for (const repo of REPOS) {
   }
 }
 
-console.log("\n=== Aggregated (50 queries, 4 adapters) ===");
+console.log(`\n=== Aggregated (50 queries, ${adapters.length} adapters) ===`);
 console.log("adapter".padEnd(14) + "  P       R       F1      tokens  hits");
 for (const [name, s] of Object.entries(stats)) {
   if (s.n === 0) continue;
@@ -239,15 +244,17 @@ for (const [name, s] of Object.entries(stats)) {
 }
 
 console.log("\n=== F1 per repo ===");
-console.log("repo".padEnd(26) + "lang     codemap   grep      embedding   aider     hits");
+const aiderHeader = aiderAvailable ? "aider     " : "";
+console.log("repo".padEnd(26) + "lang     codemap   grep      embedding   " + aiderHeader + "hits");
 for (const [slug, r] of Object.entries(perRepo)) {
   const lang = REPOS.find((rep) => rep.slug === slug)!.lang;
+  const aiderCol = aiderAvailable ? r["aider-full"]!.f1.toFixed(3).padEnd(10) : "";
   console.log(
     slug.padEnd(26) + lang.padEnd(9) +
     r.codemap!.f1.toFixed(3).padEnd(10) +
     r.grep!.f1.toFixed(3).padEnd(10) +
     r.embedding!.f1.toFixed(3).padEnd(12) +
-    r["aider-full"]!.f1.toFixed(3).padEnd(10) +
+    aiderCol +
     `${r.codemap!.hits}/${r.codemap!.n}`,
   );
 }
